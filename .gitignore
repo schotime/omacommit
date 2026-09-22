@@ -25,7 +25,7 @@ ui_*.h
 *.a
 *.so
 *.so.*
-git-commit-ui
+og
 
 # Editor / OS
 .cache/

@@ -1,6 +1,7 @@
-# git-commit-ui
+# og — Omarchy Git
 
-A TortoiseGit-style commit dialog for Omarchy, written in C++ / Qt 6.
+A TortoiseGit-style Git UI for Omarchy, written in C++ / Qt 6.
+The commit dialog (`og commit`) is the first subcommand.
 It shows a checkable file list and message editor on the left and a side-by-side
 diff of the selected file on the right, all colored by your current Omarchy theme.
 
@@ -10,29 +11,32 @@ diff of the selected file on the right, all colored by your current Omarchy them
 sudo pacman -S --needed qt6-base cmake base-devel
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-sudo cmake --install build        # installs /usr/local/bin/git-commit-ui
+sudo cmake --install build        # installs /usr/local/bin/og
 ```
 
 ## Use
 
 ```sh
-git-commit-ui              # repo containing the current directory
-git-commit-ui ~/code/app   # a specific repo
+og                  # commit dialog for the repo containing the current directory
+og commit           # the same thing, spelled out
+og commit ~/code/app  # a specific repo
 ```
 
 Launched from a menu with no repo, it asks you to pick one.
 
-Make it a git subcommand (`git ui`):
+| Subcommand | Status |
+| --- | --- |
+| `og commit` | Working — the dialog below. Also the default when none is given. |
+| `og log` | Planned |
+| `og resolve` | Planned |
 
-```sh
-git config --global alias.ui '!git-commit-ui'
-```
+`og --help` lists these; `og --version` prints the version.
 
 Hyprland binding that opens it for the repo of the focused terminal
 (add to `~/.config/hypr/bindings.conf`):
 
 ```
-bind = SUPER SHIFT, G, exec, git-commit-ui "$(omarchy-cmd-terminal-cwd)"
+bind = SUPER SHIFT, G, exec, og commit "$(omarchy-cmd-terminal-cwd)"
 ```
 
 The window's class / app_id is `omarchy-commit`, so you can target it with a
@@ -82,4 +86,5 @@ Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (remo
 - Stage/commit individual hunks from the diff pane
 - File context menu: revert, add to .gitignore, open in editor
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
+- `og log` and `og resolve`
 - PKGBUILD for the AUR

@@ -2,7 +2,7 @@
 Type=Application
 Name=Git Commit
 Comment=TortoiseGit-style commit dialog themed by Omarchy
-Exec=git-commit-ui %f
+Exec=og commit %f
 Icon=git
 Terminal=false
 Categories=Development;RevisionControl;
