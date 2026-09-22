@@ -79,7 +79,12 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 - **It uses the real `git` binary**, so hooks, GPG/SSH signing and credential
   helpers work as they do in your terminal. Commit and push run in the
   background, so slow pre-commit hooks don't freeze the window.
+- **New branch**: fill in the branch box and the commit goes to a branch created
+  from the current HEAD, leaving the branch you were on where it was. Leave it
+  empty to commit to the current branch. A name git rejects, or one that already
+  exists, is refused before anything is changed.
 - **Amend** pre-fills the last message. With no files checked, it only rewords.
+  The new-branch box is disabled while amending.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
 - The window closes by itself when the working tree ends up clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
