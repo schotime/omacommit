@@ -48,10 +48,16 @@ void reportStartupError(const QString &message)
 
 int main(int argc, char *argv[])
 {
-    QApplication app(argc, argv);
+    // These are static setters, and they must run before QApplication is
+    // constructed: Qt registers the process with the xdg-desktop-portal during
+    // construction, and a name set afterwards arrives too late to be used --
+    // the re-registration is refused with "Connection already associated with
+    // an application ID".
     QApplication::setApplicationName(QStringLiteral("og"));
     QApplication::setOrganizationName(QStringLiteral("omarchy"));
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-commit"));   // Wayland app_id / Hyprland class
+
+    QApplication app(argc, argv);
     QApplication::setStyle(QStringLiteral("Fusion"));
 
     QStringList args = app.arguments();
