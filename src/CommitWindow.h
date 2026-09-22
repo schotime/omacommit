@@ -1,10 +1,10 @@
 #pragma once
 
+#include "DiffView.h"
 #include "GitRepo.h"
 
 #include <QWidget>
 
-class DiffView;
 class MessageEdit;
 class QCheckBox;
 class QLabel;
@@ -26,6 +26,9 @@ protected:
 private:
     void refresh();
     void showCurrentDiff();
+    bool canEditInDiff(const FileEntry &e) const;
+    void takeFromLeft(DiffView::Take how, const QStringList &lines);
+    void undoDiffEdit();
     void onAmendToggled(bool on);
     bool prepareBranch();
     void updateCounts();
@@ -62,6 +65,9 @@ private:
     QPushButton *m_pushBtn;
     QPushButton *m_commitBtn;
     DiffView *m_diff;
+
+    // Previous contents of files rewritten from the diff view, newest last.
+    QVector<QPair<QString, QByteArray>> m_undo;
 
     QString m_lastMessage;
     bool m_updatingChecks = false;

@@ -6,14 +6,15 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
-#include <QFile>
-#include <QHash>
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
@@ -22,6 +23,7 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStringDecoder>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -94,6 +96,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_commitBtn->setToolTip(tr("Ctrl+Enter"));
 
     m_diff = new DiffView;
+    m_diff->onTake = [this](DiffView::Take how, const QStringList &lines) { takeFromLeft(how, lines); };
+    m_diff->onUndo = [this] { undoDiffEdit(); };
 
     // --- layout
     auto *left = new QWidget;
@@ -280,6 +284,108 @@ void CommitWindow::showCurrentDiff()
     }
     const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
     m_diff->showDiff(it->text(0), m_repo.diff(e));
+    m_diff->setEditable(canEditInDiff(e), !m_undo.isEmpty());
+}
+
+// Only plain modifications: for new, deleted, renamed or conflicted files the
+// left side is missing or is not "the same file before", and for a file that
+// is only in the commit being amended there is nothing on disk to rewrite.
+bool CommitWindow::canEditInDiff(const FileEntry &e) const
+{
+    auto plain = [](QChar c) { return c == u' ' || c == u'M'; };
+    if (!e.worktreeChange() || !plain(e.index) || !plain(e.worktree))
+        return false;
+    return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
+}
+
+namespace {
+bool writeWhole(const QString &file, const QByteArray &data, QString *error)
+{
+    // Truncate in place rather than replace, so permissions and symlinks survive.
+    QFile f(file);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(data) != data.size()) {
+        *error = f.errorString();
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+void CommitWindow::takeFromLeft(DiffView::Take how, const QStringList &lines)
+{
+    auto *it = m_files->currentItem();
+    if (!it || m_busy)
+        return;
+    const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
+    if (!canEditInDiff(e))
+        return;
+
+    const QString file = QDir(m_repo.root()).filePath(e.path);
+    QFile in(file);
+    if (!in.open(QIODevice::ReadOnly)) {
+        showError(tr("Could not read %1").arg(e.path), in.errorString());
+        return;
+    }
+    const QByteArray before = in.readAll();
+    in.close();
+
+    // Lines are written back as UTF-8, which would mangle anything else.
+    QStringDecoder utf8(QStringDecoder::Utf8);
+    [[maybe_unused]] const QString decoded = utf8(before);   // decoding is what sets hasError()
+    if (utf8.hasError() || before.startsWith("\xEF\xBB\xBF")) {
+        showError(tr("Cannot edit %1 here").arg(e.path),
+                  tr("Only UTF-8 files without a byte-order mark can be edited from the diff."));
+        return;
+    }
+    // The panes show the file as it was when it was selected. If it has changed
+    // since, lines derived from them would overwrite that change.
+    if (DiffView::linesOf(before) != m_diff->rightLines()) {
+        refresh();
+        showError(tr("%1 changed on disk").arg(e.path), tr("The diff has been reloaded; try again."));
+        return;
+    }
+
+    if (how == DiffView::Take::WholeFile) {
+        // Exact bytes from HEAD, including its line endings and final newline.
+        const GitResult r = m_repo.run({QStringLiteral("restore"), QStringLiteral("--source=HEAD"),
+                                        QStringLiteral("--worktree"), QStringLiteral("--"), e.path});
+        if (!r.ok()) {
+            showError(tr("Could not restore %1").arg(e.path), QString::fromUtf8(r.err));
+            return;
+        }
+    } else {
+        QString error;
+        if (!writeWhole(file, DiffView::compose(lines, before), &error)) {
+            showError(tr("Could not write %1").arg(e.path), error);
+            return;
+        }
+    }
+    m_undo.push_back({e.path, before});
+    m_status->setText(tr("Updated %1").arg(e.path));
+    refresh();
+}
+
+void CommitWindow::undoDiffEdit()
+{
+    if (m_undo.isEmpty() || m_busy)
+        return;
+    const auto [path, bytes] = m_undo.takeLast();
+    QString error;
+    if (!writeWhole(QDir(m_repo.root()).filePath(path), bytes, &error)) {
+        m_undo.push_back({path, bytes});
+        showError(tr("Could not restore %1").arg(path), error);
+        return;
+    }
+    m_status->setText(tr("Restored %1").arg(path));
+    refresh();
+    // A file that the edit made clean dropped out of the list; bring it back into view.
+    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
+        auto *item = m_files->topLevelItem(i);
+        if (m_entries.at(item->data(0, IndexRole).toInt()).path == path) {
+            m_files->setCurrentItem(item);
+            break;
+        }
+    }
 }
 
 QColor CommitWindow::statusColor(const FileEntry &e) const

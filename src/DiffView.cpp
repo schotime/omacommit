@@ -3,6 +3,7 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -326,12 +327,23 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     connect(m_prev, &QToolButton::clicked, this, [this] { prevChange(); });
     connect(m_next, &QToolButton::clicked, this, [this] { nextChange(); });
 
+    for (DiffPane *pane : {m_left, m_right}) {
+        pane->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(pane, &QWidget::customContextMenuRequested, this,
+                [this, pane](const QPoint &pos) { showContextMenu(pane, pos); });
+    }
+
     applyTheme();
     showMessage({}, tr("Select a file to see its changes"));
 }
 
 void DiffView::showDiff(const QString &title, const QByteArray &diff)
 {
+    // Re-showing the same file (after a refresh or a "use ..." edit) keeps the
+    // scroll position instead of jumping back to the first change.
+    const bool sameFile = m_stack->currentIndex() == 0 && title == m_title->text();
+    const int keepScroll = m_right->verticalScrollBar()->value();
+
     bool binary = false;
     const QVector<Row> rows = parseUnified(diff, &binary);
     if (binary) { showMessage(title, tr("Binary file, no text diff")); return; }
@@ -361,6 +373,8 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff)
     }
 
     m_title->setText(title);
+    m_l = left;
+    m_r = right;
     m_left->setLines(left);
     m_right->setLines(right);
     m_stack->setCurrentIndex(0);
@@ -368,8 +382,10 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff)
 
     m_current = -1;
     updateNav();
-    QTimer::singleShot(0, this, [this] {   // after layout, so the viewport height is known
-        if (!m_changeStarts.isEmpty())
+    QTimer::singleShot(0, this, [this, sameFile, keepScroll] {   // after layout, so the viewport height is known
+        if (sameFile)
+            m_right->verticalScrollBar()->setValue(keepScroll);
+        else if (!m_changeStarts.isEmpty())
             nextChange();
     });
 }
@@ -379,6 +395,8 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_title->setText(title);
     m_stats->clear();
     m_message->setText(message);
+    m_l.clear();
+    m_r.clear();
     m_left->setLines({});
     m_right->setLines({});
     m_stack->setCurrentIndex(1);
@@ -449,4 +467,122 @@ void DiffView::updateNav()
 {
     m_prev->setEnabled(m_current > 0);
     m_next->setEnabled(!m_changeStarts.isEmpty() && m_current < int(m_changeStarts.size()) - 1);
+}
+
+// ---------------------------------------------------------------- taking from the left
+
+void DiffView::setEditable(bool editable, bool canUndo)
+{
+    m_editable = editable;
+    m_canUndo = canUndo;
+}
+
+bool DiffView::isChanged(int row) const
+{
+    return m_l.at(row).kind != DiffPane::Same || m_r.at(row).kind != DiffPane::Same;
+}
+
+// The right side's lines after taking `how` at `row`. The panes hold the whole
+// file (the diff is generated with unlimited context), so rebuilding the right
+// side row by row is the complete new file.
+QStringList DiffView::resultOf(Take how, int row) const
+{
+    QStringList out;
+    if (how == Take::WholeFile || row < 0 || row >= m_l.size())
+        return out;
+
+    // The block is the run of changed rows around `row`.
+    int bs = row, be = row + 1;
+    if (how != Take::Line) {
+        while (bs > 0 && isChanged(bs - 1))
+            --bs;
+        while (be < m_l.size() && isChanged(be))
+            ++be;
+    }
+
+    for (int i = 0; i < m_l.size(); ++i) {
+        if (i == bs) {
+            for (int j = bs; j < be; ++j)
+                if (m_l.at(j).kind != DiffPane::Empty)
+                    out << m_l.at(j).text;
+            if (how == Take::LeftBeforeRight)
+                for (int j = bs; j < be; ++j)
+                    if (m_r.at(j).kind != DiffPane::Empty)
+                        out << m_r.at(j).text;
+            i = be - 1;
+            continue;
+        }
+        if (m_r.at(i).kind != DiffPane::Empty)
+            out << m_r.at(i).text;
+    }
+    return out;
+}
+
+QStringList DiffView::rightLines() const
+{
+    QStringList out;
+    for (const DiffPane::Line &l : m_r)
+        if (l.kind != DiffPane::Empty)
+            out << l.text;
+    return out;
+}
+
+QStringList DiffView::linesOf(const QByteArray &data)
+{
+    const QString s = QString::fromUtf8(data);
+    if (s.isEmpty())
+        return {};
+    QStringList lines = s.split(u'\n');
+    if (s.endsWith(u'\n'))
+        lines.removeLast();
+    for (QString &l : lines)
+        l = stripCr(l);
+    return lines;
+}
+
+QByteArray DiffView::compose(const QStringList &lines, const QByteArray &original)
+{
+    const QString eol = original.contains("\r\n") ? QStringLiteral("\r\n") : QStringLiteral("\n");
+    QByteArray out = lines.join(eol).toUtf8();
+    if (!lines.isEmpty() && original.endsWith('\n'))
+        out += eol.toUtf8();
+    return out;
+}
+
+void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
+{
+    QMenu *menu = pane->createStandardContextMenu(pos);
+    QAction *before = menu->actions().isEmpty() ? nullptr : menu->actions().constFirst();
+
+    const bool showing = m_stack->currentIndex() == 0;
+    const int row = pane->cursorForPosition(pos).blockNumber();
+    const bool onChange = showing && row >= 0 && row < m_l.size() && isChanged(row);
+
+    auto add = [&](const QString &text, Take how, bool enabled) {
+        auto *a = new QAction(text, menu);
+        a->setEnabled(m_editable && enabled);
+        connect(a, &QAction::triggered, this, [this, how, row] {
+            if (onTake)
+                onTake(how, resultOf(how, row));
+        });
+        menu->insertAction(before, a);
+    };
+    add(tr("Use left text block"), Take::Block, onChange);
+    add(tr("Use left line"), Take::Line, onChange);
+    add(tr("Use text block from left before right"), Take::LeftBeforeRight, onChange);
+    add(tr("Use left whole file"), Take::WholeFile, showing);
+
+    auto *undo = new QAction(tr("Undo last change"), menu);
+    undo->setEnabled(m_canUndo);
+    connect(undo, &QAction::triggered, this, [this] {
+        if (onUndo)
+            onUndo();
+    });
+    menu->insertSeparator(before);
+    menu->insertAction(before, undo);
+    if (before)
+        menu->insertSeparator(before);
+
+    menu->exec(pane->viewport()->mapToGlobal(pos));
+    delete menu;
 }

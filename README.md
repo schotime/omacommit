@@ -76,6 +76,13 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   so anything else you had staged stays staged but is left out, as in TortoiseGit.
   Untracked files start unchecked; checking one adds it.
 - **The diff is working tree vs HEAD**, i.e. what the commit will contain.
+- **Right-click the diff to take from the left** (HEAD) into the file on disk, as in
+  TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from
+  left before right*, or *Use left whole file*. The file is rewritten immediately,
+  keeping its line endings; *Undo last change* in the same menu puts it back, even
+  if the edit left the file clean and it dropped out of the list. Available for
+  plain modifications of UTF-8 files; if the file changed on disk since the diff
+  was shown, the edit is refused and the diff reloaded.
 - **It uses the real `git` binary**, so hooks, GPG/SSH signing and credential
   helpers work as they do in your terminal. Commit and push run in the
   background, so slow pre-commit hooks don't freeze the window.
@@ -107,7 +114,6 @@ Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (remo
 ## Roadmap ideas
 
 - Syntax highlighting in the diff
-- Stage/commit individual hunks from the diff pane
 - File context menu: revert, add to .gitignore, open in editor
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
 - `og log` and `og resolve`
