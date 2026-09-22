@@ -102,6 +102,28 @@ QString GitRepo::lastCommitMessage() const
     return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%B")}).out).trimmed();
 }
 
+bool GitRepo::branchExists(const QString &name) const
+{
+    return run({QStringLiteral("show-ref"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+                QStringLiteral("refs/heads/") + name}).ok();
+}
+
+bool GitRepo::isValidBranchName(const QString &name) const
+{
+    // A leading dash would be read as an option by git itself, so reject it
+    // before asking; check-ref-format covers the rest of the rules.
+    if (name.isEmpty() || name.startsWith(u'-'))
+        return false;
+    return run({QStringLiteral("check-ref-format"), QStringLiteral("--branch"), name}).ok();
+}
+
+// Carries the working tree and index across, so the pending changes are still
+// there to be committed on the new branch.
+GitResult GitRepo::createBranch(const QString &name) const
+{
+    return run({QStringLiteral("checkout"), QStringLiteral("-b"), name});
+}
+
 QString GitRepo::emptyTree() const
 {
     // Works for both SHA-1 and SHA-256 repositories.

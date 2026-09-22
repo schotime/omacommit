@@ -27,6 +27,7 @@ private:
     void refresh();
     void showCurrentDiff();
     void onAmendToggled(bool on);
+    bool prepareBranch();
     void updateCounts();
     void updateSelectAllState();
     void toggleAll();
@@ -51,6 +52,7 @@ private:
     QMenu *m_historyMenu;
     MessageEdit *m_message;
     QCheckBox *m_amend;
+    QLineEdit *m_newBranch;
     QLabel *m_counter;
     QCheckBox *m_selectAll;
     QLabel *m_fileCount;

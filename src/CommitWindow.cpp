@@ -60,6 +60,11 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_amend = new QCheckBox(tr("Amend last commit"));
     m_counter = new QLabel;
 
+    m_newBranch = new QLineEdit;
+    m_newBranch->setPlaceholderText(tr("New branch (leave empty to commit to the current one)"));
+    m_newBranch->setToolTip(tr("Create this branch from the current HEAD and commit to it"));
+    m_newBranch->setClearButtonEnabled(true);
+
     m_selectAll = new QCheckBox(tr("Changes"));
     m_selectAll->setTristate(true);
     m_fileCount = new QLabel;
@@ -113,6 +118,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     msgFoot->addStretch();
     msgFoot->addWidget(m_counter);
     l->addLayout(msgFoot);
+    l->addWidget(m_newBranch);
     l->addSpacing(4);
 
     auto *filesHead = new QHBoxLayout;
@@ -323,6 +329,38 @@ void CommitWindow::updateSelectAllState()
                                                   : Qt::PartiallyChecked);
 }
 
+// Returns false when the commit must not go ahead. The branch is created as a
+// separate step rather than folded into the commit, so everything downstream --
+// --only, the merge path, push -u -- works the same on a new branch as on an
+// existing one.
+bool CommitWindow::prepareBranch()
+{
+    const QString name = m_newBranch->text().trimmed();
+    if (name.isEmpty())
+        return true;
+
+    if (!m_repo.isValidBranchName(name)) {
+        showError(tr("Invalid branch name"),
+                  tr("\u201c%1\u201d is not a valid Git branch name.").arg(name));
+        m_newBranch->setFocus();
+        return false;
+    }
+    if (m_repo.branchExists(name)) {
+        showError(tr("Branch already exists"),
+                  tr("A branch named \u201c%1\u201d already exists. Choose another name, or clear "
+                     "the field to commit to the current branch.").arg(name));
+        m_newBranch->setFocus();
+        return false;
+    }
+    const GitResult r = m_repo.createBranch(name);
+    if (!r.ok()) {
+        showError(tr("Could not create branch"), QString::fromUtf8(r.err));
+        m_newBranch->setFocus();
+        return false;
+    }
+    return true;
+}
+
 void CommitWindow::updateCounts()
 {
     const ThemeColors &c = Theme::instance().colors();
@@ -353,6 +391,13 @@ void CommitWindow::onAmendToggled(bool on)
     } else if (m_message->toPlainText().trimmed() == m_lastMessage) {
         m_message->clear();
     }
+    // Amending rewrites the commit HEAD already points at, which is not
+    // something you can also redirect onto a branch that does not exist yet.
+    m_newBranch->setEnabled(!on);
+    m_newBranch->setToolTip(on ? tr("Not available while amending")
+                               : tr("Create this branch from the current HEAD and commit to it"));
+    if (on)
+        m_newBranch->clear();
     updateCounts();
 }
 
@@ -376,6 +421,9 @@ void CommitWindow::commit(bool push)
             untracked << e.path;
     }
     if (msg.isEmpty() || (paths.isEmpty() && !amend))
+        return;
+
+    if (!prepareBranch())
         return;
 
     const bool merging = m_repo.isMerging();
@@ -406,6 +454,7 @@ void CommitWindow::commit(bool push)
         if (st != QProcess::NormalExit || code != 0) {
             setBusy(false, tr("Commit failed"));
             showError(tr("Commit failed"), output);
+            refresh();   // a new branch may have been created before the failure
             return;
         }
         const QString hash = QString::fromUtf8(
@@ -416,6 +465,7 @@ void CommitWindow::commit(bool push)
             m_amend->setChecked(false);
         }
         m_message->clear();
+        m_newBranch->clear();
         if (push) {
             setBusy(true, tr("Committed %1, pushing…").arg(hash));
             startPush();
@@ -486,6 +536,7 @@ void CommitWindow::setBusy(bool busy, const QString &message)
     m_message->setEnabled(!busy);
     m_files->setEnabled(!busy);
     m_amend->setEnabled(!busy);
+    m_newBranch->setEnabled(!busy && !m_amend->isChecked());
     m_selectAll->setEnabled(!busy);
     m_historyBtn->setEnabled(!busy);
     if (!message.isNull())

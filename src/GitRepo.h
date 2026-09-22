@@ -43,6 +43,9 @@ public:
     bool hasHead() const;
     bool isMerging() const;
     QString lastCommitMessage() const;
+    bool branchExists(const QString &name) const;
+    bool isValidBranchName(const QString &name) const;
+    GitResult createBranch(const QString &name) const;
 
     QVector<FileEntry> status() const;
     QByteArray diff(const FileEntry &f) const;
