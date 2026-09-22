@@ -1,0 +1,241 @@
+#include "Theme.h"
+
+#include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QHash>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QStandardPaths>
+
+namespace {
+QColor hex(const char *s) { return QColor(QString::fromLatin1(s)); }
+
+QStringList colorFileCandidates()
+{
+    const QString home = QDir::homePath();
+    return {home + QStringLiteral("/.config/omarchy/current/theme/colors.toml"),
+            home + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml")};
+}
+} // namespace
+
+Theme &Theme::instance()
+{
+    static Theme t;
+    return t;
+}
+
+Theme::Theme()
+{
+    m_debounce.setSingleShot(true);
+    m_debounce.setInterval(150);   // theme switches touch several files; react once
+    connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] { m_debounce.start(); });
+    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_debounce.start(); });
+    connect(&m_debounce, &QTimer::timeout, this, [this] {
+        load();
+        apply();
+        emit changed();
+    });
+}
+
+QColor Theme::mix(const QColor &a, const QColor &b, qreal t)
+{
+    return QColor::fromRgbF(float(a.redF() * (1 - t) + b.redF() * t),
+                            float(a.greenF() * (1 - t) + b.greenF() * t),
+                            float(a.blueF() * (1 - t) + b.blueF() * t));
+}
+
+void Theme::load()
+{
+    m_path.clear();
+    for (const QString &c : colorFileCandidates()) {
+        if (QFileInfo::exists(c)) {
+            m_path = c;
+            break;
+        }
+    }
+
+    QHash<QString, QColor> v;
+    if (!m_path.isEmpty()) {
+        QFile f(m_path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            static const QRegularExpression re(QStringLiteral(R"(^\s*([A-Za-z0-9_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})["']?)"));
+            const QStringList lines = QString::fromUtf8(f.readAll()).split(u'\n');
+            for (const QString &line : lines) {
+                const auto m = re.match(line);
+                if (m.hasMatch())
+                    v.insert(m.captured(1).toLower(), QColor(m.captured(2)));
+            }
+        }
+    }
+    auto get = [&](const char *key, const QColor &fallback) { return v.value(QString::fromLatin1(key), fallback); };
+
+    // Fallbacks are Tokyo Night, Omarchy's default theme.
+    ThemeColors c;
+    c.background = get("background", hex("#1a1b26"));
+    c.foreground = get("foreground", hex("#a9b1d6"));
+    c.red = get("color1", hex("#f7768e"));
+    c.green = get("color2", hex("#9ece6a"));
+    c.yellow = get("color3", hex("#e0af68"));
+    c.blue = get("color4", hex("#7aa2f7"));
+    c.accent = get("accent", c.blue);
+
+    const bool lightFile = !m_path.isEmpty()
+        && QFileInfo::exists(QFileInfo(m_path).absolutePath() + QStringLiteral("/light.mode"));
+    c.light = lightFile || c.background.lightnessF() > 0.5;
+
+    c.selectionBg = get("selection_background", mix(c.background, c.accent, 0.35));
+    c.selectionFg = get("selection_foreground", c.foreground);
+    c.muted = mix(c.background, c.foreground, 0.55);
+    c.border = mix(c.background, c.foreground, 0.18);
+    c.surface = mix(c.background, c.foreground, c.light ? 0.035 : 0.045);
+    c.hover = mix(c.background, c.foreground, 0.09);
+    m_c = c;
+
+    if (!m_fontLoaded)
+        loadFont();
+    watch();
+}
+
+void Theme::loadFont()
+{
+    QString family = QStringLiteral("JetBrainsMono Nerd Font");
+    const QString tool = QStandardPaths::findExecutable(QStringLiteral("omarchy-font-current"));
+    if (!tool.isEmpty()) {
+        QProcess p;
+        p.start(tool, {});
+        if (p.waitForFinished(1500)) {
+            const QString f = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+            if (!f.isEmpty())
+                family = f;
+        }
+    }
+    m_font = QFont(family);
+    m_font.setPointSizeF(10.5);
+    m_font.setStyleHint(QFont::Monospace);
+    m_font.setFixedPitch(true);
+    m_fontLoaded = true;
+}
+
+void Theme::watch()
+{
+    if (!m_watcher.files().isEmpty())
+        m_watcher.removePaths(m_watcher.files());
+    if (!m_watcher.directories().isEmpty())
+        m_watcher.removePaths(m_watcher.directories());
+
+    // Omarchy swaps a symlink / regenerates files on theme change, so watch the
+    // directories as well as the file itself.
+    const QString home = QDir::homePath();
+    QStringList paths{home + QStringLiteral("/.config/omarchy/current"),
+                      home + QStringLiteral("/.config/omarchy/current/theme"),
+                      home + QStringLiteral("/.local/state/omarchy/current"),
+                      home + QStringLiteral("/.local/state/omarchy/current/theme")};
+    if (!m_path.isEmpty())
+        paths << m_path;
+    for (const QString &p : paths)
+        if (QFileInfo::exists(p))
+            m_watcher.addPath(p);
+}
+
+void Theme::apply()
+{
+    qApp->setFont(m_font);
+    qApp->setPalette(palette());
+    qApp->setStyleSheet(styleSheet());
+}
+
+QPalette Theme::palette() const
+{
+    const ThemeColors &c = m_c;
+    QPalette p;
+    p.setColor(QPalette::Window, c.background);
+    p.setColor(QPalette::WindowText, c.foreground);
+    p.setColor(QPalette::Base, c.surface);
+    p.setColor(QPalette::AlternateBase, c.hover);
+    p.setColor(QPalette::Text, c.foreground);
+    p.setColor(QPalette::Button, c.surface);
+    p.setColor(QPalette::ButtonText, c.foreground);
+    p.setColor(QPalette::BrightText, c.red);
+    p.setColor(QPalette::Highlight, c.selectionBg);
+    p.setColor(QPalette::HighlightedText, c.selectionFg);
+    p.setColor(QPalette::ToolTipBase, c.surface);
+    p.setColor(QPalette::ToolTipText, c.foreground);
+    p.setColor(QPalette::PlaceholderText, c.muted);
+    p.setColor(QPalette::Link, c.accent);
+    p.setColor(QPalette::Light, c.hover);
+    p.setColor(QPalette::Midlight, c.hover);
+    p.setColor(QPalette::Mid, c.border);
+    p.setColor(QPalette::Dark, c.border);
+    p.setColor(QPalette::Shadow, c.background);
+    for (auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText})
+        p.setColor(QPalette::Disabled, role, c.muted);
+    return p;
+}
+
+QString Theme::styleSheet() const
+{
+    // Flat, square, accent-on-focus: matches Omarchy's Hyprland look.
+    QString css = QStringLiteral(R"(
+* { outline: none; }
+QWidget { background: @bg@; color: @fg@; }
+QLabel#title { font-size: 13pt; font-weight: bold; }
+QLabel#muted { color: @muted@; }
+QLabel#section { color: @muted@; font-weight: bold; }
+QPlainTextEdit, QLineEdit, QTreeWidget {
+    background: @surface@; border: 1px solid @border@;
+    selection-background-color: @selbg@; selection-color: @selfg@;
+}
+QPlainTextEdit:focus, QLineEdit:focus, QTreeWidget:focus { border: 1px solid @accent@; }
+QPlainTextEdit#diffPane, QPlainTextEdit#diffPane:focus { background: @bg@; border: none; }
+QLineEdit { padding: 4px 6px; }
+QTreeWidget::item { padding: 3px 2px; }
+QTreeWidget::item:selected { background: @selbg@; color: @selfg@; }
+QTreeWidget::item:hover:!selected { background: @hover@; }
+QHeaderView::section {
+    background: @bg@; color: @muted@; border: none;
+    border-bottom: 1px solid @border@; padding: 4px 6px;
+}
+QPushButton, QToolButton { background: @surface@; border: 1px solid @border@; padding: 6px 14px; }
+QToolButton { padding: 3px 9px; }
+QToolButton::menu-indicator { image: none; width: 0; }
+QPushButton:hover, QToolButton:hover { border-color: @accent@; }
+QPushButton:pressed, QToolButton:pressed { background: @hover@; }
+QPushButton:disabled, QToolButton:disabled { color: @muted@; border-color: @border@; }
+QPushButton#primary { background: @accent@; color: @bg@; border-color: @accent@; font-weight: bold; }
+QPushButton#primary:hover { border-color: @fg@; }
+QPushButton#primary:disabled { background: @border@; color: @muted@; border-color: @border@; }
+QCheckBox { spacing: 8px; background: transparent; }
+QCheckBox::indicator, QTreeWidget::indicator {
+    width: 12px; height: 12px; border: 1px solid @muted@; background: @surface@;
+}
+QCheckBox::indicator:checked, QTreeWidget::indicator:checked { background: @accent@; border-color: @accent@; }
+QCheckBox::indicator:indeterminate { background: @border@; border-color: @accent@; }
+QCheckBox::indicator:hover, QTreeWidget::indicator:hover { border-color: @accent@; }
+QMenu { background: @surface@; border: 1px solid @border@; padding: 4px; }
+QMenu::item { padding: 5px 14px; background: transparent; }
+QMenu::item:selected { background: @selbg@; color: @selfg@; }
+QMenu::item:disabled { color: @muted@; }
+QToolTip { background: @surface@; color: @fg@; border: 1px solid @border@; padding: 4px; }
+QSplitter::handle { background: @border@; }
+QSplitter::handle:horizontal { width: 1px; }
+QSplitter::handle:vertical { height: 1px; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: @border@; min-height: 24px; }
+QScrollBar::handle:horizontal { background: @border@; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: @muted@; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+QAbstractScrollArea::corner { background: @bg@; }
+)");
+    const ThemeColors &c = m_c;
+    const QList<QPair<const char *, QColor>> tokens{
+        {"@bg@", c.background}, {"@fg@", c.foreground}, {"@accent@", c.accent},
+        {"@selbg@", c.selectionBg}, {"@selfg@", c.selectionFg}, {"@muted@", c.muted},
+        {"@border@", c.border}, {"@surface@", c.surface}, {"@hover@", c.hover}};
+    for (const auto &t : tokens)
+        css.replace(QString::fromLatin1(t.first), t.second.name());
+    return css;
+}
