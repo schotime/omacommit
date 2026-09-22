@@ -10,6 +10,8 @@
 
 #include <cstdio>
 
+#include <unistd.h>
+
 #ifndef OG_VERSION
 #define OG_VERSION "0.0.0"
 #endif
@@ -28,6 +30,18 @@ void printUsage()
                 "Options:\n"
                 "  -h, --help           Show this help\n"
                 "  -V, --version        Show the version\n");
+}
+
+// Startup failures reach the user differently depending on how og was launched:
+// from a terminal a line on stderr is what you want, from a keybind or a .desktop
+// entry there is no terminal to read, so it has to be a dialog.
+void reportStartupError(const QString &message)
+{
+    if (::isatty(STDERR_FILENO)) {
+        std::fprintf(stderr, "og: %s\n", qPrintable(message));
+        return;
+    }
+    QMessageBox::critical(nullptr, QStringLiteral("og"), message);
 }
 
 } // namespace
@@ -85,8 +99,7 @@ int main(int argc, char *argv[])
         root = GitRepo::findRoot(picked);
     }
     if (root.isEmpty()) {
-        QMessageBox::critical(nullptr, QStringLiteral("og"),
-                              QObject::tr("%1 is not inside a Git repository.").arg(start));
+        reportStartupError(QObject::tr("%1 is not inside a Git repository.").arg(start));
         return 1;
     }
 
