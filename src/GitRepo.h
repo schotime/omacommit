@@ -12,9 +12,12 @@ struct FileEntry {
     QString oldPath;          // set for renames/copies
     QChar index = u' ';       // porcelain X
     QChar worktree = u' ';    // porcelain Y
+    bool inLastCommit = false;   // part of the commit being amended
 
     bool untracked() const { return index == u'?'; }
+    bool worktreeChange() const { return index != u' ' || worktree != u' '; }
     QString statusText() const;
+    QString worktreeStatusText() const;
 };
 
 struct GitResult {
@@ -34,8 +37,9 @@ public:
     explicit GitRepo(const QString &root);
     QString root() const { return m_root; }
 
-    void configure(QProcess &proc) const;
-    GitResult run(const QStringList &args, const QByteArray &stdinData = {}, int timeoutMs = 30000) const;
+    void configure(QProcess &proc, const QString &indexFile = QString()) const;
+    GitResult run(const QStringList &args, const QByteArray &stdinData = {}, int timeoutMs = 30000,
+                  const QString &indexFile = QString()) const;
 
     QString branch() const;          // empty when detached
     QString upstream() const;        // empty when none
@@ -48,6 +52,12 @@ public:
     GitResult createBranch(const QString &name) const;
 
     QVector<FileEntry> status() const;
+    QVector<FileEntry> lastCommitFiles() const;
+    QString headParent() const;
+    QString scratchIndexPath() const;
+    GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,
+                                const QStringList &exclude) const;
+    void refreshIndexAfterAmend(const QStringList &paths) const;
     QByteArray diff(const FileEntry &f) const;
     QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 

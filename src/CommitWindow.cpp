@@ -12,6 +12,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QFile>
+#include <QHash>
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
@@ -211,6 +213,22 @@ void CommitWindow::refresh()
 
     m_entries = m_repo.status();
 
+    if (m_amend->isChecked()) {
+        // Amending replaces the last commit, so what it already contains belongs
+        // in the list too: unchecking one of those rows drops it from the commit.
+        QHash<QString, int> byPath;
+        for (int i = 0; i < m_entries.size(); ++i)
+            byPath.insert(m_entries.at(i).path, i);
+        const QVector<FileEntry> committed = m_repo.lastCommitFiles();
+        for (const FileEntry &e : committed) {
+            const auto it = byPath.constFind(e.path);
+            if (it != byPath.constEnd())
+                m_entries[it.value()].inLastCommit = true;
+            else
+                m_entries.push_back(e);
+        }
+    }
+
     const QString branch = m_repo.branch();
     m_header->setText(branch.isEmpty() ? tr("Commit on <i>detached HEAD</i>")
                                        : tr("Commit to <b>%1</b>").arg(branch.toHtmlEscaped()));
@@ -398,6 +416,7 @@ void CommitWindow::onAmendToggled(bool on)
                                : tr("Create this branch from the current HEAD and commit to it"));
     if (on)
         m_newBranch->clear();
+    refresh();   // the last commit's files join or leave the list
     updateCounts();
 }
 
@@ -408,55 +427,91 @@ void CommitWindow::commit(bool push)
 
     const QString msg = m_message->toPlainText().trimmed();
     const bool amend = m_amend->isChecked();
-    QStringList paths, untracked;
+    QStringList paths, untracked, dropped;
     for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
         auto *it = m_files->topLevelItem(i);
-        if (it->checkState(0) != Qt::Checked)
-            continue;
         const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
+        if (it->checkState(0) != Qt::Checked) {
+            // Unchecking something the commit already has means taking it out.
+            if (e.inLastCommit) {
+                dropped << e.path;
+                if (!e.oldPath.isEmpty())
+                    dropped << e.oldPath;
+            }
+            continue;
+        }
+        if (!e.worktreeChange() && e.inLastCommit)
+            continue;              // already in the tree being amended; nothing to take
         paths << e.path;
         if (!e.oldPath.isEmpty())
             paths << e.oldPath;
         if (e.untracked())
             untracked << e.path;
     }
-    if (msg.isEmpty() || (paths.isEmpty() && !amend))
+    if (msg.isEmpty() || (paths.isEmpty() && dropped.isEmpty() && !amend))
         return;
 
     if (!prepareBranch())
         return;
 
     const bool merging = m_repo.isMerging();
+    // Dropping files from the commit cannot be expressed with `commit --only`,
+    // which only ever adds working-tree content on top of the tree it amends.
+    const bool scratch = amend && !merging && !dropped.isEmpty();
     setBusy(true, tr("Committing…"));
 
-    // New files have to be known to git before `commit --only` can take them;
-    // during a merge everything checked is staged and committed together.
-    const QStringList toAdd = merging ? paths : untracked;
-    if (!toAdd.isEmpty()) {
-        QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
-        args << toAdd;
-        const GitResult r = m_repo.run(args);
-        if (!r.ok()) {
+    QString indexFile;
+    if (scratch) {
+        indexFile = m_repo.scratchIndexPath();
+        if (indexFile.isEmpty()) {
             setBusy(false, tr("Nothing committed"));
-            showError(tr("Could not stage files"), QString::fromUtf8(r.err));
+            showError(tr("Could not amend"), tr("Could not locate the repository's git directory."));
             return;
+        }
+        QFile::remove(indexFile);
+        const GitResult r = m_repo.prepareAmendIndex(indexFile, paths, dropped);
+        if (!r.ok()) {
+            QFile::remove(indexFile);
+            setBusy(false, tr("Nothing committed"));
+            showError(tr("Could not amend"), QString::fromUtf8(r.err));
+            return;
+        }
+    } else {
+        // New files have to be known to git before `commit --only` can take them;
+        // during a merge everything checked is staged and committed together.
+        const QStringList toAdd = merging ? paths : untracked;
+        if (!toAdd.isEmpty()) {
+            QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
+            args << toAdd;
+            const GitResult r = m_repo.run(args);
+            if (!r.ok()) {
+                setBusy(false, tr("Nothing committed"));
+                showError(tr("Could not stage files"), QString::fromUtf8(r.err));
+                return;
+            }
         }
     }
 
     saveToHistory(msg);
 
     // Async so long-running hooks (linters, tests) don't freeze the window.
+    QStringList touched = paths;
+    touched << dropped;
     auto *proc = new QProcess(this);
-    m_repo.configure(*proc);
-    connect(proc, &QProcess::finished, this, [this, proc, push](int code, QProcess::ExitStatus st) {
+    m_repo.configure(*proc, indexFile);
+    connect(proc, &QProcess::finished, this, [this, proc, push, indexFile, touched](int code, QProcess::ExitStatus st) {
         const QString output = QString::fromUtf8(proc->readAllStandardOutput() + proc->readAllStandardError());
         proc->deleteLater();
+        if (!indexFile.isEmpty())
+            QFile::remove(indexFile);
         if (st != QProcess::NormalExit || code != 0) {
             setBusy(false, tr("Commit failed"));
             showError(tr("Commit failed"), output);
             refresh();   // a new branch may have been created before the failure
             return;
         }
+        if (!indexFile.isEmpty())
+            m_repo.refreshIndexAfterAmend(touched);
         const QString hash = QString::fromUtf8(
             m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("HEAD")}).out).trimmed();
         QSettings().remove(draftKey());
@@ -474,14 +529,21 @@ void CommitWindow::commit(bool push)
             finishAfterSuccess();
         }
     });
-    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError err) {
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, indexFile](QProcess::ProcessError err) {
         if (err != QProcess::FailedToStart)
             return;
         proc->deleteLater();
+        if (!indexFile.isEmpty())
+            QFile::remove(indexFile);
         setBusy(false, tr("Commit failed"));
         showError(tr("Commit failed"), tr("Could not start git."));
     });
-    proc->start(QStringLiteral("git"), m_repo.commitArgs(paths, amend, merging));
+    // With the scratch index the tree is already exactly right, so the commit
+    // takes the index as-is rather than naming paths.
+    proc->start(QStringLiteral("git"),
+                scratch ? QStringList{QStringLiteral("commit"), QStringLiteral("--amend"),
+                                      QStringLiteral("-F"), QStringLiteral("-")}
+                        : m_repo.commitArgs(paths, amend, merging));
     proc->write(msg.toUtf8());
     proc->closeWriteChannel();
 }

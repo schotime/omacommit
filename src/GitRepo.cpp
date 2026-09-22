@@ -15,6 +15,14 @@ QProcessEnvironment gitEnv()
 
 QString FileEntry::statusText() const
 {
+    if (inLastCommit && !worktreeChange())
+        return QStringLiteral("In last commit");
+    const QString base = worktreeStatusText();
+    return inLastCommit ? base + QStringLiteral(" + last commit") : base;
+}
+
+QString FileEntry::worktreeStatusText() const
+{
     if (index == u'?') return QStringLiteral("Untracked");
     if (index == u'U' || worktree == u'U' || (index == u'A' && worktree == u'A') || (index == u'D' && worktree == u'D'))
         return QStringLiteral("Conflicted");
@@ -39,17 +47,21 @@ QString GitRepo::findRoot(const QString &startDir)
 
 GitRepo::GitRepo(const QString &root) : m_root(root) {}
 
-void GitRepo::configure(QProcess &proc) const
+void GitRepo::configure(QProcess &proc, const QString &indexFile) const
 {
     proc.setWorkingDirectory(m_root);
-    proc.setProcessEnvironment(gitEnv());
+    QProcessEnvironment env = gitEnv();
+    if (!indexFile.isEmpty())
+        env.insert(QStringLiteral("GIT_INDEX_FILE"), indexFile);
+    proc.setProcessEnvironment(env);
 }
 
-GitResult GitRepo::run(const QStringList &args, const QByteArray &stdinData, int timeoutMs) const
+GitResult GitRepo::run(const QStringList &args, const QByteArray &stdinData, int timeoutMs,
+                       const QString &indexFile) const
 {
     GitResult r;
     QProcess p;
-    configure(p);
+    configure(p, indexFile);
     p.start(QStringLiteral("git"), args);
     if (!p.waitForStarted(5000)) {
         r.err = "could not start git";
@@ -157,6 +169,99 @@ QVector<FileEntry> GitRepo::status() const
     return out;
 }
 
+QString GitRepo::headParent() const
+{
+    const auto r = run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+                        QStringLiteral("HEAD^1")});
+    const QString p = QString::fromUtf8(r.out).trimmed();
+    return p.isEmpty() ? emptyTree() : p;   // amending the root commit
+}
+
+// What the commit being amended actually changed, so the dialog can offer to
+// drop any of it.
+QVector<FileEntry> GitRepo::lastCommitFiles() const
+{
+    QVector<FileEntry> out;
+    if (!hasHead())
+        return out;
+    const auto r = run({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                        QStringLiteral("--name-status"), QStringLiteral("-z"), QStringLiteral("-M"),
+                        headParent(), QStringLiteral("HEAD")});
+    if (!r.ok())
+        return out;
+
+    const QList<QByteArray> parts = r.out.split('\0');
+    int i = 0;
+    while (i + 1 < parts.size()) {
+        const QByteArray st = parts.at(i);
+        if (st.isEmpty()) {
+            ++i;
+            continue;
+        }
+        const char code = st.at(0);
+        const bool paired = (code == 'R' || code == 'C');   // status, old, new
+        if (paired && i + 2 >= parts.size())
+            break;
+        FileEntry e;
+        e.inLastCommit = true;
+        if (paired) {
+            e.oldPath = QString::fromUtf8(parts.at(i + 1));
+            e.path = QString::fromUtf8(parts.at(i + 2));
+        } else {
+            e.path = QString::fromUtf8(parts.at(i + 1));
+        }
+        out.push_back(e);
+        i += paired ? 3 : 2;
+    }
+    return out;
+}
+
+QString GitRepo::scratchIndexPath() const
+{
+    const QString dir = QString::fromUtf8(
+        run({QStringLiteral("rev-parse"), QStringLiteral("--absolute-git-dir")}).out).trimmed();
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/og-amend-index");
+}
+
+// Builds the tree for an amend that drops files the commit currently has.
+// `git commit --amend` commits whatever the index holds, so the index is what
+// has to be shaped -- but shaping the real one would disturb whatever the user
+// has staged, so this works in a scratch index that the commit is then pointed
+// at. Hooks and signing still run, because it is still a plain `git commit`.
+GitResult GitRepo::prepareAmendIndex(const QString &indexFile, const QStringList &include,
+                                     const QStringList &exclude) const
+{
+    GitResult r = run({QStringLiteral("read-tree"), QStringLiteral("HEAD")}, {}, 30000, indexFile);
+    if (!r.ok())
+        return r;
+    if (!exclude.isEmpty()) {
+        // Back to the parent's version, which removes files the commit added.
+        // The working tree is untouched, so the change reappears as pending.
+        QStringList args{QStringLiteral("reset"), QStringLiteral("-q"), headParent(), QStringLiteral("--")};
+        args << exclude;
+        r = run(args, {}, 30000, indexFile);
+        if (!r.ok())
+            return r;
+    }
+    if (!include.isEmpty()) {
+        QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
+        args << include;
+        r = run(args, {}, 30000, indexFile);
+    }
+    return r;
+}
+
+// The real index still describes the commit that was just replaced, which would
+// show up as phantom staged changes. Point the touched paths back at HEAD.
+void GitRepo::refreshIndexAfterAmend(const QStringList &paths) const
+{
+    if (paths.isEmpty())
+        return;
+    QStringList args{QStringLiteral("reset"), QStringLiteral("-q"), QStringLiteral("--")};
+    args << paths;
+    run(args);
+}
+
 QByteArray GitRepo::diff(const FileEntry &f) const
 {
     // Full-file context so the side-by-side view shows the whole file.
@@ -166,6 +271,14 @@ QByteArray GitRepo::diff(const FileEntry &f) const
     if (f.untracked()) {
         args << QStringLiteral("--no-index") << QStringLiteral("--") << QStringLiteral("/dev/null") << f.path;
         return run(args).out;   // exits 1 when files differ; that's expected
+    }
+    if (f.inLastCommit && !f.worktreeChange()) {
+        // Nothing pending for it; show what the commit being amended did.
+        args << QStringLiteral("-M") << headParent() << QStringLiteral("HEAD") << QStringLiteral("--");
+        if (!f.oldPath.isEmpty())
+            args << f.oldPath;
+        args << f.path;
+        return run(args).out;
     }
     // Working tree vs HEAD: exactly what a commit of this file would record.
     args << QStringLiteral("-M") << (hasHead() ? QStringLiteral("HEAD") : emptyTree()) << QStringLiteral("--");

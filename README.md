@@ -83,8 +83,11 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   from the current HEAD, leaving the branch you were on where it was. Leave it
   empty to commit to the current branch. A name git rejects, or one that already
   exists, is refused before anything is changed.
-- **Amend** pre-fills the last message. With no files checked, it only rewords.
-  The new-branch box is disabled while amending.
+- **Amend** pre-fills the last message and adds the files the last commit
+  already contains to the list, marked *In last commit* and checked. Uncheck one
+  and it is taken out of the amended commit: its change returns to the working
+  tree as a pending change rather than being lost. With no files checked, it only
+  rewords. The new-branch box is disabled while amending.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
 - The window closes by itself when the working tree ends up clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
