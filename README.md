@@ -9,10 +9,26 @@ diff of the selected file on the right, all colored by your current Omarchy them
 
 ```sh
 sudo pacman -S --needed qt6-base cmake base-devel
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --build build -j
-sudo cmake --install build        # installs /usr/local/bin/og
+cmake --install build
 ```
+
+That installs `~/.local/bin/og` and
+`~/.local/share/applications/omarchy-commit.desktop`, and needs no root.
+Drop the `CMAKE_INSTALL_PREFIX` line to install under `/usr/local` for every
+user on the machine instead (`cmake --install` then needs `sudo`).
+
+**Install it rather than running it out of `build/`.** xdg-desktop-portal
+resolves the app by looking up `omarchy-commit.desktop` and then the `og` on
+its own `PATH`; until both exist it logs
+
+```
+qt.qpa.services: Failed to register with host portal ... App info not found
+```
+
+which is harmless but noisy. Both `~/.local/bin` and `~/.local/share` are in
+the portal's search path, so a user install is enough to silence it.
 
 ## Use
 
