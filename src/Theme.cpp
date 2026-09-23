@@ -327,8 +327,8 @@ QToolButton::menu-indicator { image: none; width: 0; }
 QPushButton:hover, QToolButton:hover { border-color: @accent@; }
 QPushButton:pressed, QToolButton:pressed { background: @hover@; }
 QPushButton:disabled, QToolButton:disabled { color: @muted@; border-color: @border@; }
-QPushButton#primary { background: @accent@; color: @bg@; border-color: @accent@; font-weight: bold; }
-QPushButton#primary:hover { border-color: @fg@; }
+QPushButton#primary { background: @accentTint@; color: @fg@; border-color: @accentEdge@; font-weight: bold; }
+QPushButton#primary:hover { background: @accentTintHover@; border-color: @accent@; }
 QPushButton#primary:disabled { background: @border@; color: @muted@; border-color: @border@; }
 QCheckBox { spacing: 8px; background: transparent; }
 QMenu { background: @surface@; border: 1px solid @border@; padding: 4px; }
@@ -355,5 +355,13 @@ QAbstractScrollArea::corner { background: @bg@; }
         {"@border@", c.border}, {"@surface@", c.surface}, {"@hover@", c.hover}};
     for (const auto &t : tokens)
         css.replace(QString::fromLatin1(t.first), t.second.name());
+    // The accent see-through, for the primary button's tint: real alpha, so a
+    // translucent window shows through it too.
+    auto rgba = [](const QColor &col, qreal alpha) {
+        return QStringLiteral("rgba(%1, %2, %3, %4)").arg(col.red()).arg(col.green()).arg(col.blue()).arg(int(alpha * 255));
+    };
+    css.replace(QStringLiteral("@accentTintHover@"), rgba(c.accent, 0.42));
+    css.replace(QStringLiteral("@accentTint@"), rgba(c.accent, 0.30));
+    css.replace(QStringLiteral("@accentEdge@"), rgba(c.accent, 0.75));
     return css;
 }
