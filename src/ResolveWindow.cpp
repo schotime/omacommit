@@ -423,8 +423,11 @@ void ResolveWindow::refreshList(const QString &select)
                                                      [&](const UnmergedFile &x) { return x.path == p; });
                 QString state;
                 if (u.has(2) && u.has(3)) {
+                    // A count only for text: a binary file has no markers to
+                    // count, and "none left" would wrongly read as done.
                     QFile f(QDir(m_repo.root()).filePath(p));
-                    state = bothState(u.has(1), f.open(QIODevice::ReadOnly) ? countConflicts(f.readAll()) : -1);
+                    const QByteArray data = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+                    state = bothState(u.has(1), isText(data) && !data.isEmpty() ? countConflicts(data) : -1);
                 } else if (u.has(2)) {
                     state = u.has(1) ? tr("Deleted in %1").arg(m_incShort) : tr("Added in %1 only").arg(m_curShort);
                 } else if (u.has(3)) {
