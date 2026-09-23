@@ -294,7 +294,7 @@ void LogWindow::reload()
     const QString branch = m_repo.branch();
     m_header->setText(m_allBranches->isChecked() ? tr("History of all branches")
                       : branch.isEmpty()         ? tr("History of <i>detached HEAD</i>")
-                                                 : tr("History of <b>%1</b>").arg(branch.toHtmlEscaped()));
+                                                 : tr("History of <span style=\"font-weight:600\">%1</span>").arg(branch.toHtmlEscaped()));
 
     const QString keep = m_shownCommit;
     m_refs = m_repo.refsByCommit();

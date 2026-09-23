@@ -268,7 +268,7 @@ void CommitWindow::refresh()
 
     const QString branch = m_repo.branch();
     m_header->setText(branch.isEmpty() ? tr("Commit on <i>detached HEAD</i>")
-                                       : tr("Commit to <b>%1</b>").arg(branch.toHtmlEscaped()));
+                                       : tr("Commit to <span style=\"font-weight:600\">%1</span>").arg(branch.toHtmlEscaped()));
     if (m_repo.isMerging())
         m_header->setText(m_header->text() + tr(" <i>(merge)</i>"));
 

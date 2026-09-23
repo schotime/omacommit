@@ -299,9 +299,9 @@ QString Theme::styleSheet() const
     QString css = QStringLiteral(R"(
 * { outline: none; }
 QWidget { background: @bg@; color: @fg@; }
-QLabel#title { font-size: 13pt; }
+QLabel#title { font-size: 13pt; font-weight: 500; }
 QLabel#muted { color: @muted@; }
-QLabel#section { color: @muted@; }
+QLabel#section { color: @muted@; font-weight: 500; }
 QPlainTextEdit, QLineEdit, QTreeWidget {
     background: @surface@; border: 1px solid @border@;
     selection-background-color: @selbg@; selection-color: @selfg@;
