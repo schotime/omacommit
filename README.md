@@ -100,6 +100,10 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   and it is taken out of the amended commit: its change returns to the working
   tree as a pending change rather than being lost. With no files checked, it only
   rewords. The new-branch box is disabled while amending.
+- **Right-click a file → Revert…** takes it back to the last commit, dropping both
+  staged and unstaged changes, after a confirmation. A newly added file (or the new
+  name of a rename) is only un-added and stays on disk as untracked; untracked files
+  have nothing to revert to and don't offer it.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
 - The window closes by itself when the working tree ends up clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
@@ -119,7 +123,7 @@ Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (remo
 ## Roadmap ideas
 
 - Syntax highlighting in the diff
-- File context menu: revert, add to .gitignore, open in editor
+- More file context menu entries: add to .gitignore, open in editor
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
 - `og log` and `og resolve`
 - PKGBUILD for the AUR

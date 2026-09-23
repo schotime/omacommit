@@ -34,6 +34,9 @@ private:
     bool writeEdited(const QStringList &lines);
     void saveEdited();
     bool resolveUnsavedEdits(bool allowCancel = true);
+    void showFileMenu(const QPoint &pos);
+    bool canRevert(const FileEntry &e) const;
+    void revertFile(const FileEntry &e);
     void onAmendToggled(bool on);
     bool prepareBranch();
     void updateCounts();

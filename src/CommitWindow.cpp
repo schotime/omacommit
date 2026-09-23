@@ -159,6 +159,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_message, &QPlainTextEdit::textChanged, this, &CommitWindow::updateCounts);
     connect(m_amend, &QCheckBox::toggled, this, &CommitWindow::onAmendToggled);
     connect(m_files, &QTreeWidget::currentItemChanged, this, &CommitWindow::showCurrentDiff);
+    m_files->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_files, &QWidget::customContextMenuRequested, this, &CommitWindow::showFileMenu);
     connect(m_files, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *, int column) {
         if (!m_updatingChecks && column == 0) {
             updateSelectAllState();
@@ -410,6 +412,79 @@ void CommitWindow::saveEdited()
 {
     if (m_diff->isDirty() && m_diff->save())
         refresh();   // the file's status may have changed, or it may now be clean
+}
+
+void CommitWindow::showFileMenu(const QPoint &pos)
+{
+    auto *it = m_files->itemAt(pos);
+    if (!it)
+        return;
+    const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
+
+    QMenu menu(this);
+    QAction *revert = menu.addAction(tr("Revert…"));
+    revert->setEnabled(!m_busy && canRevert(e));
+    if (menu.exec(m_files->viewport()->mapToGlobal(pos)) == revert)
+        revertFile(e);
+}
+
+// Untracked files have no committed version to go back to, and a row that is
+// only in the commit being amended has nothing pending.
+bool CommitWindow::canRevert(const FileEntry &e) const
+{
+    return e.worktreeChange() && !e.untracked();
+}
+
+// TortoiseGit's revert: back to HEAD, staged and unstaged changes alike. A file
+// that is new to the index -- added, or the new name of a rename or copy -- is
+// only taken out of the index, and stays on disk as untracked.
+void CommitWindow::revertFile(const FileEntry &e)
+{
+    if (!canRevert(e) || m_busy)
+        return;
+
+    const bool editing = m_diffPath == e.path && m_diff->isDirty();
+    const bool newInIndex = e.index == u'A' || e.index == u'R' || e.index == u'C' || !m_repo.hasHead();
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Revert %1").arg(e.path));
+    box.setText(tr("Revert %1 to the last commit?").arg(e.path));
+    QString what = newInIndex ? tr("It will no longer be added; the file stays on disk as untracked.")
+                              : tr("Its uncommitted changes will be lost.");
+    if (editing)
+        what += QLatin1Char(' ') + tr("Your unsaved edits in the diff will be lost.");
+    box.setInformativeText(what);
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(tr("Revert"));
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Ok)
+        return;
+
+    QStringList fromHead, unstage;
+    (newInIndex ? unstage : fromHead) << e.path;
+    if (!e.oldPath.isEmpty() && e.index == u'R')
+        fromHead << e.oldPath;   // the old name comes back
+
+    GitResult r;
+    r.exitCode = 0;
+    if (!fromHead.isEmpty()) {
+        QStringList args{QStringLiteral("restore"), QStringLiteral("--source=HEAD"), QStringLiteral("--staged"),
+                         QStringLiteral("--worktree"), QStringLiteral("--")};
+        r = m_repo.run(args << fromHead);
+    }
+    if (r.ok() && !unstage.isEmpty()) {
+        QStringList args{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("--quiet"), QStringLiteral("--")};
+        r = m_repo.run(args << unstage);
+    }
+    if (!r.ok()) {
+        showError(tr("Could not revert %1").arg(e.path), QString::fromUtf8(r.err));
+        refresh();   // part of it may have gone through
+        return;
+    }
+    if (editing)
+        m_diff->discard();   // the file they applied to is gone
+    m_status->setText(tr("Reverted %1").arg(e.path));
+    refresh();
 }
 
 // Asks what to do with unsaved diff edits. Returns false when the caller
