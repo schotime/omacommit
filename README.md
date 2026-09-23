@@ -127,11 +127,12 @@ conflicted files on the left, the two sides on top (aligned, read-only) and
 the merged file below (editable, what gets saved). Pass a conflicted file to
 open it first; `og commit` also offers **Resolve…** on a conflicted file.
 
-- The sides are named by what they are, never "ours"/"theirs" — which git
-  swaps during a rebase. Merging: *Mine — HEAD (main)* and *Theirs —
-  feature/x*. Rebasing: *Upstream — main* and *Mine — replaying abc123 …*.
-  Every button uses the same names, and each side keeps one colour in all
-  three panes.
+- Your own work is always on the right, as in every other diff in og, and
+  the sides are named by what they are, never "ours"/"theirs" — which git
+  swaps during a rebase. Merging: *Theirs — feature/x* | *Mine — HEAD (main)*.
+  Rebasing: *Upstream — main + 1 of your commits, already replayed* | *Mine —
+  replaying abc123 …*. Buttons use the same names in the same left-to-right
+  order, and yours is one colour, the other side another, in all three panes.
 - A conflict is git's `<<<<<<< / ======= / >>>>>>>` block in the file. For
   each one: *Use theirs*, *Use mine*, or both in either order; or edit the
   merged text by hand — delete the markers and it counts as resolved. Alt+↓ /

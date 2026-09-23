@@ -63,6 +63,9 @@ private:
     // UI never says ours/theirs, only these.
     QString m_curShort, m_curLong, m_incShort, m_incLong, m_hint, m_opText;
     bool m_canCommit = false;
+    // Your own work is always shown on the right, as in every other diff here.
+    // That is git's HEAD side, except in a rebase, where it is the incoming one.
+    bool m_mineIsIncoming = false;
 
     QLabel *m_title;
     QLabel *m_subtitle;

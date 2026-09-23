@@ -172,8 +172,10 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_wholeBtn->setText(tr("Whole file ▾"));
     m_wholeBtn->setPopupMode(QToolButton::InstantPopup);
     auto *wholeMenu = new QMenu(m_wholeBtn);
-    wholeMenu->addAction(tr("Use %1 for the whole file").arg(m_incShort), this, [this] { useWholeSide(true); });
-    wholeMenu->addAction(tr("Use %1 for the whole file").arg(m_curShort), this, [this] { useWholeSide(false); });
+    // Everything reads left to right in pane order: the other side, then yours.
+    for (bool incoming : {!m_mineIsIncoming, m_mineIsIncoming})
+        wholeMenu->addAction(tr("Use %1 for the whole file").arg(incoming ? m_incShort : m_curShort), this,
+                             [this, incoming] { useWholeSide(incoming); });
     m_wholeBtn->setMenu(wholeMenu);
     m_saveBtn = new QPushButton(tr("Save"));
     m_saveBtn->setToolTip(tr("Write the merged file (Ctrl+S)"));
@@ -196,10 +198,17 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     mh->addWidget(m_nextBtn);
     ml->addLayout(mh);
     auto *tools = new QHBoxLayout;
-    tools->addWidget(m_useInc);
-    tools->addWidget(m_useCur);
-    tools->addWidget(m_useIncCur);
-    tools->addWidget(m_useCurInc);
+    if (m_mineIsIncoming) {   // upstream on the left, yours on the right
+        tools->addWidget(m_useCur);
+        tools->addWidget(m_useInc);
+        tools->addWidget(m_useCurInc);
+        tools->addWidget(m_useIncCur);
+    } else {
+        tools->addWidget(m_useInc);
+        tools->addWidget(m_useCur);
+        tools->addWidget(m_useIncCur);
+        tools->addWidget(m_useCurInc);
+    }
     tools->addWidget(m_wholeBtn);
     tools->addStretch();
     tools->addWidget(m_saveBtn);
@@ -324,17 +333,25 @@ void ResolveWindow::describeSides()
         m_canCommit = true;
         m_opText = tr("Merging <b>%1</b> into <b>%2</b>").arg(other.toHtmlEscaped(), (branch.isEmpty() ? tr("HEAD") : branch).toHtmlEscaped());
     } else if (m_operation == u"rebase") {
-        QString onto;
+        QString onto, ontoSha;
         for (const char *dir : {"/rebase-merge/onto", "/rebase-apply/onto"}) {
             QFile f(m_repo.gitDir() + QLatin1String(dir));
             if (f.open(QIODevice::ReadOnly)) {
-                onto = nameOf(QString::fromLatin1(f.readAll()).trimmed());
+                ontoSha = QString::fromLatin1(f.readAll()).trimmed();
+                onto = nameOf(ontoSha);
                 break;
             }
         }
         const QString replaying = describe(QStringLiteral("REBASE_HEAD"));
+        // HEAD is upstream plus whichever of your commits have been replayed already.
+        const int replayed = ontoSha.isEmpty() ? 0
+                           : out({QStringLiteral("rev-list"), QStringLiteral("--count"), ontoSha + QStringLiteral("..HEAD")}).toInt();
+        const QString base = onto.isEmpty() ? tr("HEAD") : onto;
+        m_mineIsIncoming = true;
         m_curShort = tr("upstream");
-        m_curLong = tr("Upstream — %1, which you are rebasing onto").arg(onto.isEmpty() ? tr("HEAD") : onto);
+        m_curLong = replayed == 0 ? tr("Upstream — %1, which you are rebasing onto").arg(base)
+                  : replayed == 1 ? tr("Upstream — %1 + 1 of your commits, already replayed").arg(base)
+                                  : tr("Upstream — %1 + %2 of your commits, already replayed").arg(base).arg(replayed);
         m_incShort = tr("mine");
         m_incLong = replaying.isEmpty() ? tr("Mine — the commit being replayed") : tr("Mine — replaying %1").arg(replaying);
         m_hint = tr("When every file is resolved, continue with git rebase --continue.");
@@ -538,8 +555,14 @@ void ResolveWindow::openText(const UnmergedFile &u)
     }
     m_incLines = DiffView::linesOf(inc);
     m_curLines = DiffView::linesOf(cur);
-    m_top->showDiff(u.path, m_repo.diffFiles(incPath, curPath), false);
-    m_top->setPaneCaptions(m_incLong, m_curLong);
+    // Yours on the right, the other side on the left.
+    if (m_mineIsIncoming) {
+        m_top->showDiff(u.path, m_repo.diffFiles(curPath, incPath), false);
+        m_top->setPaneCaptions(m_curLong, m_incLong);
+    } else {
+        m_top->showDiff(u.path, m_repo.diffFiles(incPath, curPath), false);
+        m_top->setPaneCaptions(m_incLong, m_curLong);
+    }
 
     // The merged file starts as git left it -- markers and all, or whatever
     // has been done to it since.
@@ -581,8 +604,9 @@ void ResolveWindow::openWholeFile(const UnmergedFile &u)
     if (u.has(2) && u.has(3)) {
         m_wholeText->setText(tr("%1 can't be merged line by line (it is binary, or not UTF-8 text).\n"
                                 "Choose one side for the whole file.").arg(path));
-        arm(m_wholeA, tr("Use %1").arg(m_incShort), [keep] { keep(true); });
-        arm(m_wholeB, tr("Use %1").arg(m_curShort), [keep] { keep(false); });
+        const bool leftIsIncoming = !m_mineIsIncoming;
+        arm(m_wholeA, tr("Use %1").arg(leftIsIncoming ? m_incShort : m_curShort), [keep, leftIsIncoming] { keep(leftIsIncoming); });
+        arm(m_wholeB, tr("Use %1").arg(leftIsIncoming ? m_curShort : m_incShort), [keep, leftIsIncoming] { keep(!leftIsIncoming); });
     } else if (u.has(2)) {
         m_wholeText->setText(u.has(1) ? tr("%1 was changed in %2 but deleted in %3.").arg(path, m_curShort, m_incShort)
                                       : tr("%1 was added in %2 only.").arg(path, m_curShort));
@@ -639,9 +663,12 @@ void ResolveWindow::parseMerged()
             state = Outside;
             row.kind = DiffPane::Marker;
         } else {
-            row.kind = state == InCurrent ? DiffPane::Mine
+            // Coloured by whose work it is, matching the panes above: during a
+            // rebase git's HEAD section is upstream's, not yours.
+            const auto yours = DiffPane::Mine, other = DiffPane::Theirs;
+            row.kind = state == InCurrent ? (m_mineIsIncoming ? other : yours)
                      : state == InBase    ? DiffPane::Base
-                     : state == InIncoming ? DiffPane::Theirs
+                     : state == InIncoming ? (m_mineIsIncoming ? yours : other)
                                            : DiffPane::Same;
         }
     }
@@ -695,7 +722,8 @@ void ResolveWindow::gotoConflict(int k)
         if (b2 >= 0)
             atInc = b2 + int(inc.size());
         if (i == k)
-            row = a >= 0 ? m_top->rowForLine(true, a + 1) : b2 >= 0 ? m_top->rowForLine(false, b2 + 1) : -1;
+            row = a >= 0 ? m_top->rowForLine(!m_mineIsIncoming, a + 1)
+                : b2 >= 0 ? m_top->rowForLine(m_mineIsIncoming, b2 + 1) : -1;
     }
     m_top->revealRow(row);
     updateActions();
@@ -862,7 +890,7 @@ void ResolveWindow::updateActions()
 void ResolveWindow::applyTheme()
 {
     const ThemeColors &t = Theme::instance().colors();
-    // Incoming is yellow and current is the accent colour, in all three panes.
+    // Yours is the accent colour and the other side yellow, in all three panes.
     m_top->setSideTints(t.yellow, t.accent);
     const qreal soft = t.light ? 0.16 : 0.20;
     DiffColors c;
