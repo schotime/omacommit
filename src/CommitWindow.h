@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Agent.h"
 #include "DiffView.h"
 #include "GitRepo.h"
 
@@ -13,6 +14,7 @@ class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QMenu;
+class QProcess;
 class QPushButton;
 class QSplitter;
 class QToolButton;
@@ -37,6 +39,9 @@ private:
     void saveEdited();
     bool resolveUnsavedEdits(bool allowCancel = true);
     void flagWhitespace(const QByteArray &text);
+    void updateWriteButton();
+    void writeMessage();
+    QString messagePrompt() const;
     void showFileMenu(const QPoint &pos);
     bool canRevert(const FileEntry &e) const;
     void revertFile(const FileEntry &e);
@@ -66,6 +71,10 @@ private:
     QLabel *m_header;
     QLabel *m_repoPath;
     QToolButton *m_historyBtn;
+    QToolButton *m_writeBtn;
+    Agent m_agent;
+    QProcess *m_writer = nullptr;   // the agent writing a message, while it runs
+    bool m_writeStopped = false;
     QMenu *m_historyMenu;
     MessageEdit *m_message;
     QCheckBox *m_amend;

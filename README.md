@@ -122,6 +122,16 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   from the current HEAD, leaving the branch you were on where it was. Leave it
   empty to commit to the current branch. A name git rejects, or one that already
   exists, is refused before anything is changed.
+- **✨ Write** asks Omarchy's default coding agent (`omarchy default agent`) to
+  write the message — Claude Code or Codex for now. It sends the diff of the
+  *checked* files (against the parent when amending), the last dozen commit
+  subjects so it matches the repository's style, and your draft if you started
+  one; the reply replaces the message as one undo step, so Ctrl+Z restores what
+  you had. Nothing is sent until you click, and the agent runs one-shot with no
+  tools (`claude -p --tools ""`, `codex exec --sandbox read-only`), so it can
+  only read what it is given. **■ Stop** cancels it. The button is disabled, with
+  the reason on hover, when your default agent isn't installed or isn't one of
+  those two.
 - **Amend** pre-fills the last message and adds the files the last commit
   already contains to the list, marked *In last commit* and checked. Uncheck one
   and it is taken out of the amended commit: its change returns to the working

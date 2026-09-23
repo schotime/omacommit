@@ -27,6 +27,8 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStringDecoder>
+#include <QTextCursor>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -55,6 +57,12 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_header->setTextFormat(Qt::RichText);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
+
+    // Writes a message with Omarchy's default coding agent (Claude Code or Codex).
+    m_agent = Agent::detect();
+    m_writeBtn = new QToolButton;
+    m_writeBtn->setText(tr("✨ Write"));
+    m_writeBtn->setVisible(!m_agent.id.isEmpty());
 
     m_historyBtn = new QToolButton;
     m_historyBtn->setText(tr("Recent ▾"));
@@ -120,6 +128,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     auto *msgHead = new QHBoxLayout;
     msgHead->addWidget(sectionLabel(tr("Message")));
     msgHead->addStretch();
+    msgHead->addWidget(m_writeBtn);
     msgHead->addWidget(m_historyBtn);
     l->addLayout(msgHead);
     l->addWidget(m_message, 2);
@@ -176,6 +185,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_commitBtn, &QPushButton::clicked, this, [this] { commit(false); });
     connect(m_pushBtn, &QPushButton::clicked, this, [this] { commit(true); });
     connect(m_historyMenu, &QMenu::aboutToShow, this, &CommitWindow::rebuildHistoryMenu);
+    connect(m_writeBtn, &QToolButton::clicked, this, &CommitWindow::writeMessage);
+    updateWriteButton();
     connect(&Theme::instance(), &Theme::changed, this, &CommitWindow::applyTheme);
 
     // --- keyboard
@@ -705,7 +716,7 @@ void CommitWindow::updateCounts()
             ++checked;
     m_fileCount->setText(tr("%1 of %2 selected").arg(checked).arg(total));
 
-    const bool can = !m_busy && !msg.trimmed().isEmpty() && (checked > 0 || m_amend->isChecked());
+    const bool can = !m_busy && !m_writer && !msg.trimmed().isEmpty() && (checked > 0 || m_amend->isChecked());
     m_commitBtn->setEnabled(can);
     m_pushBtn->setEnabled(can);
 }
@@ -924,6 +935,7 @@ void CommitWindow::setBusy(bool busy, const QString &message)
     m_newBranch->setEnabled(!busy && !m_amend->isChecked());
     m_selectAll->setEnabled(!busy);
     m_historyBtn->setEnabled(!busy);
+    updateWriteButton();
     if (!message.isNull())
         m_status->setText(message);
     if (!busy)
@@ -944,6 +956,168 @@ void CommitWindow::showError(const QString &title, const QString &details)
     if (text.size() > 1500)
         box.setDetailedText(text);
     box.exec();
+}
+
+void CommitWindow::updateWriteButton()
+{
+    if (m_writer) {
+        m_writeBtn->setText(tr("■ Stop"));
+        m_writeBtn->setToolTip(tr("Stop %1").arg(m_agent.name));
+        m_writeBtn->setEnabled(true);
+        return;
+    }
+    m_writeBtn->setText(tr("✨ Write"));
+    m_writeBtn->setEnabled(!m_busy && m_agent.usable());
+    if (m_agent.usable())
+        m_writeBtn->setToolTip(tr("Write a commit message for the checked changes with %1, your default agent.\n"
+                                  "Sends their diff to it; nothing is sent until you click.").arg(m_agent.name));
+    else if (!m_agent.supported)
+        m_writeBtn->setToolTip(tr("Writing messages works with Claude Code or Codex; your default agent is %1.\n"
+                                  "Change it with: omarchy default agent claude").arg(m_agent.name));
+    else
+        m_writeBtn->setToolTip(tr("%1 isn't installed yet. Open it once with: omarchy agent").arg(m_agent.name));
+}
+
+// What the agent is asked: the checked changes as they will be committed --
+// against the parent when amending -- the recent subjects for the house
+// style, and the draft if there is one. Empty when nothing is checked.
+QString CommitWindow::messagePrompt() const
+{
+    QStringList tracked, untracked;
+    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
+        auto *it = m_files->topLevelItem(i);
+        if (it->checkState(0) != Qt::Checked)
+            continue;
+        const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
+        (e.untracked() ? untracked : tracked) << e.path;
+        if (!e.oldPath.isEmpty())
+            tracked << e.oldPath;
+    }
+    QString diff;
+    if (!tracked.isEmpty()) {
+        QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("-M"),
+                         m_repo.hasHead() ? diffBase() : m_repo.emptyTree(), QStringLiteral("--")};
+        diff += QString::fromUtf8(m_repo.run(args << tracked).out);
+    }
+    for (const QString &p : untracked)
+        diff += QString::fromUtf8(m_repo.run({QStringLiteral("diff"), QStringLiteral("--no-color"),
+                                              QStringLiteral("--no-index"), QStringLiteral("--"),
+                                              QStringLiteral("/dev/null"), p}).out);
+    if (diff.trimmed().isEmpty())
+        return {};
+    constexpr int limit = 60000;   // enough to describe a change; a huge diff only slows the reply
+    if (diff.size() > limit)
+        diff = diff.left(limit) + tr("\n[… diff truncated: %1 more characters]\n").arg(diff.size() - limit);
+
+    QString prompt = QStringLiteral(
+        "Write a git commit message for the changes below.\n\n"
+        "- First line: a summary of at most 50 characters, in the imperative mood (\"Add\", \"Fix\"), "
+        "with no trailing period.\n"
+        "- If the change needs explaining, add a blank line and a body wrapped at 72 columns that says "
+        "what changed and why.\n"
+        "- Follow the style of the recent commit messages if they show one.\n"
+        "- Reply with only the commit message: no code fences, no quotes, no preamble.\n"
+        "- Everything you need is here; do not run commands or read files.\n");
+    const QString draft = m_message->toPlainText().trimmed();
+    if (m_amend->isChecked() && !m_lastMessage.isEmpty())
+        prompt += QStringLiteral("\nThis amends the previous commit, whose message was:\n") + m_lastMessage + u'\n';
+    if (!draft.isEmpty() && draft != m_lastMessage)
+        prompt += QStringLiteral("\nThe author's draft, whose intent to keep:\n") + draft + u'\n';
+    if (m_repo.hasHead()) {
+        const QString recent = QString::fromUtf8(
+            m_repo.run({QStringLiteral("log"), QStringLiteral("-12"), QStringLiteral("--format=- %s")}).out).trimmed();
+        if (!recent.isEmpty())
+            prompt += QStringLiteral("\nRecent commit messages in this repository:\n") + recent + u'\n';
+    }
+    return prompt + QStringLiteral("\nThe changes:\n\n") + diff;
+}
+
+void CommitWindow::writeMessage()
+{
+    if (m_writer) {   // Stop
+        m_writeStopped = true;
+        m_writer->kill();
+        return;
+    }
+    if (!m_agent.usable() || m_busy)
+        return;
+    const QString prompt = messagePrompt();
+    if (prompt.isEmpty()) {
+        m_status->setText(tr("Check the files the message should describe"));
+        return;
+    }
+    if (!m_tmp)
+        m_tmp = std::make_unique<QTemporaryDir>();
+    const QString replyFile = m_tmp->filePath(QStringLiteral("reply"));
+    QFile::remove(replyFile);
+
+    m_writeStopped = false;
+    m_writer = new QProcess(this);
+    m_writer->setWorkingDirectory(m_repo.root());
+    auto *limit = new QTimer(m_writer);   // a stuck agent shouldn't hold the dialog forever
+    limit->setSingleShot(true);
+    connect(limit, &QTimer::timeout, m_writer, &QProcess::kill);
+    limit->start(180000);
+
+    auto done = [this, replyFile](const QString &error) {
+        const bool stopped = m_writeStopped;
+        QString reply = m_agent.replyInFile()
+            ? [&] { QFile f(replyFile); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); }()
+            : QString::fromUtf8(m_writer->readAllStandardOutput());
+        const QString err = QString::fromUtf8(m_writer->readAllStandardError()).trimmed();
+        m_writer->deleteLater();
+        m_writer = nullptr;
+        m_message->setReadOnly(false);
+
+        // Tidy what models sometimes add anyway: code fences, surrounding blank lines.
+        reply = reply.trimmed();
+        if (reply.startsWith(QLatin1String("```")))
+            reply = reply.section(u'\n', 1);
+        if (reply.endsWith(QLatin1String("```")))
+            reply = reply.section(u'\n', 0, -2);
+        reply = reply.trimmed();
+
+        if (stopped) {
+            m_status->setText(tr("Stopped"));
+        } else if (error.isEmpty() && !reply.isEmpty()) {
+            QTextCursor c(m_message->document());   // one undo step: Ctrl+Z brings the old text back
+            c.beginEditBlock();
+            c.select(QTextCursor::Document);
+            c.insertText(reply);
+            c.endEditBlock();
+            m_message->setFocus();
+            m_status->setText(tr("Written by %1 — check it before committing").arg(m_agent.name));
+        } else {
+            // Whatever it printed is the likeliest explanation (not logged in, no network, ...).
+            const QString said = !err.isEmpty() ? err : reply;
+            m_status->setText(tr("No message written"));
+            showError(tr("%1 couldn't write a message").arg(m_agent.name),
+                      (error.isEmpty() ? tr("It returned nothing.") : error)
+                          + (said.isEmpty() ? QString() : QStringLiteral("\n\n") + said.right(1500)));
+        }
+        updateWriteButton();
+        updateCounts();
+    };
+    // Only a clean exit counts: a failing agent may still print something --
+    // an error message must never end up as the commit message.
+    connect(m_writer, &QProcess::finished, this, [this, done](int code, QProcess::ExitStatus st) {
+        done(m_writeStopped || (st == QProcess::NormalExit && code == 0) ? QString()
+             : st != QProcess::NormalExit ? tr("It stopped after running too long, or crashed.")
+                                          : tr("It exited with code %1.").arg(code));
+    });
+    connect(m_writer, &QProcess::errorOccurred, this, [this, done](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart)
+            done(tr("Could not start %1.").arg(m_agent.program()));
+    });
+
+    m_message->setReadOnly(true);
+    m_status->setText(tr("Writing a message with %1…").arg(m_agent.name));
+    m_writer->start(m_agent.program(), m_agent.arguments(replyFile));
+    m_writer->write(prompt.toUtf8());
+    m_writer->closeWriteChannel();
+    updateWriteButton();
+    updateCounts();
 }
 
 void CommitWindow::rebuildHistoryMenu()
