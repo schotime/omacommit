@@ -12,11 +12,13 @@
 namespace {
 QColor hex(const char *s) { return QColor(QString::fromLatin1(s)); }
 
+// Where omarchy-theme-set puts the active theme; the ~/.config location is
+// where older Omarchy releases kept it.
 QStringList colorFileCandidates()
 {
     const QString home = QDir::homePath();
-    return {home + QStringLiteral("/.config/omarchy/current/theme/colors.toml"),
-            home + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml")};
+    return {home + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml"),
+            home + QStringLiteral("/.config/omarchy/current/theme/colors.toml")};
 }
 } // namespace
 
@@ -57,36 +59,50 @@ void Theme::load()
     }
 
     QHash<QString, QColor> v;
+    QString mode;
     if (!m_path.isEmpty()) {
         QFile f(m_path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
             static const QRegularExpression re(QStringLiteral(R"(^\s*([A-Za-z0-9_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})["']?)"));
+            static const QRegularExpression modeRe(QStringLiteral(R"(^\s*mode\s*=\s*["']?(\w+))"));
             const QStringList lines = QString::fromUtf8(f.readAll()).split(u'\n');
             for (const QString &line : lines) {
-                const auto m = re.match(line);
-                if (m.hasMatch())
+                if (const auto m = re.match(line); m.hasMatch())
                     v.insert(m.captured(1).toLower(), QColor(m.captured(2)));
+                else if (const auto mm = modeRe.match(line); mm.hasMatch())
+                    mode = mm.captured(1).toLower();
             }
         }
     }
-    auto get = [&](const char *key, const QColor &fallback) { return v.value(QString::fromLatin1(key), fallback); };
+    // Omarchy names its colours (red, green, ...). Older themes used terminal
+    // slots (color1, color2, ...), which are still accepted.
+    auto get = [&](std::initializer_list<const char *> keys, const QColor &fallback) {
+        for (const char *key : keys)
+            if (const auto it = v.constFind(QString::fromLatin1(key)); it != v.constEnd())
+                return it.value();
+        return fallback;
+    };
 
     // Fallbacks are Tokyo Night, Omarchy's default theme.
     ThemeColors c;
-    c.background = get("background", hex("#1a1b26"));
-    c.foreground = get("foreground", hex("#a9b1d6"));
-    c.red = get("color1", hex("#f7768e"));
-    c.green = get("color2", hex("#9ece6a"));
-    c.yellow = get("color3", hex("#e0af68"));
-    c.blue = get("color4", hex("#7aa2f7"));
-    c.accent = get("accent", c.blue);
+    c.background = get({"background"}, hex("#1a1b26"));
+    c.foreground = get({"foreground"}, hex("#a9b1d6"));
+    c.red = get({"red", "color1"}, hex("#f7768e"));
+    c.green = get({"green", "color2"}, hex("#9ece6a"));
+    c.yellow = get({"yellow", "color3"}, hex("#e0af68"));
+    c.blue = get({"blue", "color4"}, hex("#7aa2f7"));
+    c.accent = get({"accent"}, c.blue);
 
     const bool lightFile = !m_path.isEmpty()
         && QFileInfo::exists(QFileInfo(m_path).absolutePath() + QStringLiteral("/light.mode"));
-    c.light = lightFile || c.background.lightnessF() > 0.5;
+    c.light = mode.isEmpty() ? (lightFile || c.background.lightnessF() > 0.5) : mode == u"light";
 
-    c.selectionBg = get("selection_background", mix(c.background, c.accent, 0.35));
-    c.selectionFg = get("selection_foreground", c.foreground);
+    c.selectionBg = get({"selection", "selection_background"}, mix(c.background, c.accent, 0.35));
+    c.selectionFg = get({"selection_foreground"}, c.foreground);
+    // Secondary text, borders and input fields stay derived from the theme's
+    // background and foreground rather than its muted / dark_foreground: those
+    // vary too much in contrast between themes to be readable as text in all
+    // of them (White's dark_foreground is #c0c0c0 on #ffffff).
     c.muted = mix(c.background, c.foreground, 0.55);
     c.border = mix(c.background, c.foreground, 0.18);
     c.surface = mix(c.background, c.foreground, c.light ? 0.035 : 0.045);

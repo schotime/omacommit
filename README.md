@@ -150,14 +150,25 @@ open it first; `og commit` also offers **Resolve…** on a conflicted file.
 
 ## Theming
 
-Colors come from the active theme's `colors.toml`
-(`~/.config/omarchy/current/theme/`, with `~/.local/state/omarchy/current/theme/`
-as a fallback). The app watches those paths and re-colors live when you switch
-themes. A `light.mode` file in the theme switches to light-theme diff tints.
-The font comes from `omarchy-font-current` (fallback: JetBrainsMono Nerd Font).
+Colours come from the active Omarchy theme's `colors.toml`, in
+`~/.local/state/omarchy/current/theme/` (or `~/.config/omarchy/current/theme/` on
+older Omarchy releases). og watches it and re-colours open windows live when you
+switch themes. The font comes from `omarchy-font-current` (fallback: JetBrainsMono
+Nerd Font).
 
-Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (removed),
-`color2` (added), `color3` (warnings).
+| Key | Used for |
+| --- | --- |
+| `background`, `foreground` | Everything; secondary text, borders and input fields are blended from these |
+| `accent` | Focus, primary buttons, your side when resolving, the current branch |
+| `selection` | Selected rows and text |
+| `red` | Removed lines, conflict markers, errors |
+| `green` | Added lines, added files, local branches |
+| `yellow` | Modified files, tags, the other side when resolving |
+| `blue` | Remote branches, graph lanes |
+| `mode` | `light` switches to light-theme diff tints |
+
+The terminal-style names older themes used (`color1`–`color4`,
+`selection_background`) are still accepted.
 
 ## Roadmap ideas
 
