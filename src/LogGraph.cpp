@@ -21,10 +21,14 @@ GraphRow GraphLayout::add(const QString &hash, const QStringList &parents)
     row.column = col;
 
     // Top half: everything passes straight through, except lanes heading for
-    // this commit, which converge on its dot.
+    // this commit, which converge on its dot. The ones passing through carry
+    // on through the bottom half too.
+    QVector<bool> passing(m_lanes.size(), false);
     for (int i = 0; i < m_lanes.size(); ++i)
-        if (!m_lanes.at(i).isEmpty())
-            row.top.push_back({i, m_lanes.at(i) == hash ? col : i});
+        if (!m_lanes.at(i).isEmpty()) {
+            passing[i] = m_lanes.at(i) != hash;
+            row.top.push_back({i, passing.at(i) ? i : col});
+        }
     for (QString &lane : m_lanes)
         if (lane == hash)
             lane.clear();
@@ -46,8 +50,10 @@ GraphRow GraphLayout::add(const QString &hash, const QStringList &parents)
         fromHere[lane] = true;
         row.bottom.push_back({col, lane});
     }
-    for (int i = 0; i < m_lanes.size(); ++i)
-        if (!m_lanes.at(i).isEmpty() && !fromHere.at(i))
+    // A lane a parent joined still continues its own line: the join is drawn
+    // on top of it, not instead of it, or that line would stop mid-row.
+    for (int i = 0; i < passing.size(); ++i)
+        if (passing.at(i))
             row.bottom.push_back({i, i});
 
     while (!m_lanes.isEmpty() && m_lanes.constLast().isEmpty())
