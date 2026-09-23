@@ -10,6 +10,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 add_executable(og
     src/main.cpp
     src/Agent.cpp
+    src/Style.cpp
     src/GitRepo.cpp
     src/Theme.cpp
     src/MessageEdit.cpp

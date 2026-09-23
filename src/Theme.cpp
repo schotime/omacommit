@@ -331,12 +331,6 @@ QPushButton#primary { background: @accent@; color: @bg@; border-color: @accent@;
 QPushButton#primary:hover { border-color: @fg@; }
 QPushButton#primary:disabled { background: @border@; color: @muted@; border-color: @border@; }
 QCheckBox { spacing: 8px; background: transparent; }
-QCheckBox::indicator, QTreeWidget::indicator {
-    width: 12px; height: 12px; border: 1px solid @muted@; background: @surface@;
-}
-QCheckBox::indicator:checked, QTreeWidget::indicator:checked { background: @accent@; border-color: @accent@; }
-QCheckBox::indicator:indeterminate { background: @border@; border-color: @accent@; }
-QCheckBox::indicator:hover, QTreeWidget::indicator:hover { border-color: @accent@; }
 QMenu { background: @surface@; border: 1px solid @border@; padding: 4px; }
 QMenu::item { padding: 5px 14px; background: transparent; }
 QMenu::item:selected { background: @selbg@; color: @selfg@; }

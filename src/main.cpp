@@ -2,6 +2,7 @@
 #include "GitRepo.h"
 #include "LogWindow.h"
 #include "ResolveWindow.h"
+#include "Style.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -61,7 +62,7 @@ int main(int argc, char *argv[])
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-commit"));   // Wayland app_id / Hyprland class
 
     QApplication app(argc, argv);
-    QApplication::setStyle(QStringLiteral("Fusion"));
+    QApplication::setStyle(new Style);   // Fusion, with og's checkboxes
 
     QStringList args = app.arguments();
     args.removeFirst();
