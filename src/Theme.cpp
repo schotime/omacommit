@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QHash>
 #include <QProcess>
 #include <QRegularExpression>
@@ -303,8 +304,9 @@ QString Theme::styleSheet() const
     // Flat, square, accent-on-focus: matches Omarchy's Hyprland look.
     QString css = QStringLiteral(R"(
 * { outline: none; }
-QWidget { background: @bg@; color: @fg@; }
-QLabel#title { font-size: 13pt; font-weight: 500; }
+QWidget { background: @bg@; color: @fg@; font-family: "@uiFamily@"; font-size: @uiSize@pt; }
+QPlainTextEdit { font-family: "@codeFamily@"; font-size: @codeSize@pt; }
+QLabel#title { font-size: @titleSize@pt; font-weight: 500; }
 QLabel#muted { color: @muted@; }
 QLabel#section { color: @muted@; font-weight: 500; }
 QPlainTextEdit, QLineEdit, QTreeWidget {
@@ -363,5 +365,19 @@ QAbstractScrollArea::corner { background: @bg@; }
     css.replace(QStringLiteral("@accentTintHover@"), rgba(c.accent, 0.42));
     css.replace(QStringLiteral("@accentTint@"), rgba(c.accent, 0.30));
     css.replace(QStringLiteral("@accentEdge@"), rgba(c.accent, 0.75));
+
+    // Fonts go in the stylesheet: with one set, Qt gives lists and labels the
+    // desktop's font over the app font. The desktop's sizes, scaled down --
+    // they're sized for reading, og is dense: at 11pt, UI text 10pt, code 9pt.
+    auto pt = [](qreal size) { return QString::number(std::round(size * 2) / 2); };
+    auto scaled = [](const QFont &f, qreal at11) { return (f.pointSizeF() > 0 ? f.pointSizeF() : 11) * at11 / 11; };
+    const QFont ui = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+    const qreal uiSize = scaled(ui, 10);
+    const qreal codeSize = scaled(QFontDatabase::systemFont(QFontDatabase::FixedFont), 9);
+    css.replace(QStringLiteral("@uiFamily@"), ui.family());
+    css.replace(QStringLiteral("@uiSize@"), pt(uiSize));
+    css.replace(QStringLiteral("@codeFamily@"), m_font.family());
+    css.replace(QStringLiteral("@codeSize@"), pt(codeSize));
+    css.replace(QStringLiteral("@titleSize@"), pt(uiSize * 13 / 11));
     return css;
 }
