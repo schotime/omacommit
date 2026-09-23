@@ -136,17 +136,16 @@ public:
 
     static QColor laneColor(int lane, const ThemeColors &t)
     {
-        const QColor palette[] = {t.accent, t.green, t.yellow, t.blue, t.red, Theme::mix(t.accent, t.green, 0.5)};
-        return palette[lane % 6];
+        return t.lanes.isEmpty() ? t.accent : t.lanes.at(lane % t.lanes.size());
     }
 
     static QColor refColor(const RefLabel &ref, const ThemeColors &t)
     {
         switch (ref.kind) {
         case RefLabel::Head:   return t.red;
-        case RefLabel::Branch: return ref.current ? t.accent : t.green;
-        case RefLabel::Remote: return t.blue;
-        case RefLabel::Tag:    return t.yellow;
+        case RefLabel::Branch: return ref.current ? t.accent : t.refBranch;
+        case RefLabel::Remote: return t.refRemote;
+        case RefLabel::Tag:    return t.refTag;
         }
         return t.muted;
     }

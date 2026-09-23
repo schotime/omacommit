@@ -162,10 +162,17 @@ Nerd Font).
 | `accent` | Focus, primary buttons, your side when resolving, the current branch |
 | `selection` | Selected rows and text |
 | `red` | Removed lines, conflict markers, errors |
-| `green` | Added lines, added files, local branches |
-| `yellow` | Modified files, tags, the other side when resolving |
-| `blue` | Remote branches, graph lanes |
+| `green` | Added lines, added files |
+| `yellow` | Modified files |
 | `mode` | `light` switches to light-theme diff tints |
+
+Colours that must be told apart — the log graph's lanes, the ref badges, the
+two sides when resolving, and added vs removed lines — are picked from the whole
+palette (`green`, `yellow`, `blue`, `magenta`, `cyan`, `orange`, `bright_*`, …)
+so each is clearly distinct from its neighbours and readable on the background.
+Many themes set `accent` equal to `blue`, and some (Osaka Jade, White,
+Vantablack) are nearly one hue; greyscale themes fall back to lighter and darker
+shades.
 
 The terminal-style names older themes used (`color1`–`color4`,
 `selection_background`) are still accepted.

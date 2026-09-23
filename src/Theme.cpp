@@ -9,6 +9,9 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 
+#include <array>
+#include <cmath>
+
 namespace {
 QColor hex(const char *s) { return QColor(QString::fromLatin1(s)); }
 
@@ -39,6 +42,23 @@ Theme::Theme()
         apply();
         emit changed();
     });
+}
+
+double Theme::distance(const QColor &a, const QColor &b)
+{
+    // sRGB -> CIE Lab (D65), then Euclidean distance: roughly, 10 is a subtle
+    // difference, 30+ reads as a different colour.
+    auto lab = [](const QColor &c) {
+        auto lin = [](double v) { return v > 0.04045 ? std::pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
+        const double r = lin(c.redF()), g = lin(c.greenF()), b = lin(c.blueF());
+        const double x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047;
+        const double y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        const double z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+        auto f = [](double v) { return v > 0.008856 ? std::cbrt(v) : 7.787 * v + 16.0 / 116.0; };
+        return std::array<double, 3>{116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))};
+    };
+    const auto p = lab(a), q = lab(b);
+    return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
 }
 
 QColor Theme::mix(const QColor &a, const QColor &b, qreal t)
@@ -96,6 +116,89 @@ void Theme::load()
     const bool lightFile = !m_path.isEmpty()
         && QFileInfo::exists(QFileInfo(m_path).absolutePath() + QStringLiteral("/light.mode"));
     c.light = mode.isEmpty() ? (lightFile || c.background.lightnessF() > 0.5) : mode == u"light";
+
+    // --- colours that have to be told apart
+    // Candidates are the theme's own colours, by name, in order of preference;
+    // a pick must be clearly apart (ΔE) from the colours it sits next to and
+    // readable on the background. Short of that, the furthest candidate wins.
+    auto named = [&](std::initializer_list<const char *> keys) {
+        QVector<QColor> out;
+        for (const char *k : keys)
+            if (const auto it = v.constFind(QString::fromLatin1(k)); it != v.constEnd())
+                out << it.value();
+        return out;
+    };
+    const QVector<QColor> palette = named({"accent", "green", "yellow", "blue", "red", "magenta", "cyan", "orange",
+                                           "bright_green", "bright_yellow", "bright_blue", "bright_red",
+                                           "bright_magenta", "bright_cyan"})
+                                  + QVector<QColor>{c.accent, c.green, c.yellow, c.blue, c.red};
+    auto visible = [&](const QColor &x) { return distance(x, c.background) >= 25; };
+    auto pickApart = [&](QVector<QColor> order, const QVector<QColor> &avoid, double apart) {
+        order += palette;
+        auto apartFromAll = [&](const QColor &x) {
+            bool ok = visible(x);
+            for (const QColor &a : avoid)
+                ok = ok && distance(x, a) >= apart;
+            return ok;
+        };
+        for (const QColor &x : order)
+            if (apartFromAll(x))
+                return x;
+        // Greyscale themes have no second hue: tell colours apart by lightness.
+        const int named = int(order.size());
+        for (int i = 0; i < named; ++i)
+            order << mix(order.at(i), c.foreground, 0.55) << mix(order.at(i), c.background, 0.45);
+        order << c.foreground << mix(c.foreground, c.background, 0.5);
+        for (int i = named; i < order.size(); ++i)
+            if (apartFromAll(order.at(i)))
+                return order.at(i);
+        QColor best = order.value(0, c.foreground);
+        double bestGap = -1;
+        for (const QColor &x : order) {
+            double gap = 1e9;
+            for (const QColor &a : avoid)
+                gap = std::min(gap, distance(x, a));
+            if (visible(x) && gap > bestGap) {
+                best = x;
+                bestGap = gap;
+            }
+        }
+        return best;
+    };
+
+    // Diffs: added must not look like removed (monochrome themes: red == green).
+    if (distance(c.green, c.red) < 30)
+        c.green = pickApart(named({"green", "bright_green", "cyan", "bright_cyan", "blue", "accent"}), {c.red}, 30);
+    // Resolving: the other side against your accent, and not the markers' red.
+    c.other = pickApart(named({"yellow", "orange", "magenta", "cyan", "green", "bright_yellow", "bright_magenta",
+                               "bright_cyan", "blue"}),
+                        {c.accent, c.red}, 30);
+    // Ref badges: current branch is the accent; the rest apart from it and each other.
+    c.refBranch = pickApart(named({"green", "bright_green", "cyan", "yellow"}), {c.accent}, 25);
+    c.refRemote = pickApart(named({"blue", "cyan", "magenta", "bright_blue"}), {c.accent, c.refBranch}, 25);
+    c.refTag = pickApart(named({"yellow", "orange", "bright_yellow", "magenta"}), {c.accent, c.refBranch, c.refRemote}, 25);
+    // Graph lanes: as many mutually distinct colours as the theme has, up to six.
+    c.lanes = {c.accent};
+    for (const QColor &x : palette) {
+        if (c.lanes.size() == 6)
+            break;
+        bool ok = visible(x);
+        for (const QColor &l : c.lanes)
+            ok = ok && distance(x, l) >= 25;
+        if (ok)
+            c.lanes << x;
+    }
+    // Near-monochrome themes: add lighter and darker shades so lines still differ.
+    for (int i = 0; c.lanes.size() < 3 && i < 8; ++i) {
+        const QColor base = c.lanes.at(i % c.lanes.size());
+        for (const QColor &x : {mix(base, c.foreground, 0.55), mix(base, c.background, 0.45)}) {
+            bool ok = visible(x);
+            for (const QColor &l : c.lanes)
+                ok = ok && distance(x, l) >= 15;
+            if (ok && c.lanes.size() < 3)
+                c.lanes << x;
+        }
+    }
 
     c.selectionBg = get({"selection", "selection_background"}, mix(c.background, c.accent, 0.35));
     c.selectionFg = get({"selection_foreground"}, c.foreground);

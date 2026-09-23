@@ -890,8 +890,9 @@ void ResolveWindow::updateActions()
 void ResolveWindow::applyTheme()
 {
     const ThemeColors &t = Theme::instance().colors();
-    // Yours is the accent colour and the other side yellow, in all three panes.
-    m_top->setSideTints(t.yellow, t.accent);
+    // Yours is the accent colour and the other side a colour picked to stand
+    // apart from it (Theme::load), in all three panes.
+    m_top->setSideTints(t.other, t.accent);
     const qreal soft = t.light ? 0.16 : 0.20;
     DiffColors c;
     c.bg = t.background;
@@ -901,7 +902,7 @@ void ResolveWindow::applyTheme()
     c.border = t.border;
     c.empty = t.border;
     c.mine = Theme::mix(t.background, t.accent, soft);
-    c.theirs = Theme::mix(t.background, t.yellow, soft);
+    c.theirs = Theme::mix(t.background, t.other, soft);
     c.base = Theme::mix(t.background, t.muted, 0.12);
     c.marker = Theme::mix(t.background, t.red, 0.35);
     m_merged->setColors(c);
