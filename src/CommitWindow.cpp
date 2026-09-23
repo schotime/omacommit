@@ -1,6 +1,7 @@
 #include "CommitWindow.h"
 #include "DiffView.h"
 #include "MessageEdit.h"
+#include "ResolveWindow.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -194,6 +195,18 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     const QString draft = QSettings().value(draftKey()).toString();
     if (!draft.isEmpty())
         m_message->setPlainText(draft);
+    // Otherwise, mid-merge (or cherry-pick, or revert), start from the message
+    // git prepared. Its # lines are instructions: `commit -F` would keep them.
+    if (m_message->toPlainText().trimmed().isEmpty()) {
+        QFile prepared(m_repo.gitDir() + QStringLiteral("/MERGE_MSG"));
+        if (prepared.open(QIODevice::ReadOnly)) {
+            QStringList keep;
+            for (const QString &line : QString::fromUtf8(prepared.readAll()).split(u'\n'))
+                if (!line.startsWith(u'#'))
+                    keep << line;
+            m_message->setPlainText(keep.join(u'\n').trimmed());
+        }
+    }
 
     refresh();
     applyTheme();
@@ -437,10 +450,24 @@ void CommitWindow::showFileMenu(const QPoint &pos)
     const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
 
     QMenu menu(this);
+    QAction *resolve = nullptr;
+    if (e.statusText() == QLatin1String("Conflicted")) {
+        resolve = menu.addAction(tr("Resolve…"));
+        resolve->setEnabled(!m_busy);
+    }
     QAction *revert = menu.addAction(tr("Revert…"));
     revert->setEnabled(!m_busy && canRevert(e));
-    if (menu.exec(m_files->viewport()->mapToGlobal(pos)) == revert)
+    QAction *chosen = menu.exec(m_files->viewport()->mapToGlobal(pos));
+    if (chosen == revert) {
         revertFile(e);
+    } else if (chosen && chosen == resolve) {
+        // Its own window; the list is refreshed when it closes.
+        auto *w = new ResolveWindow(m_repo.root(), e.path);
+        w->setAttribute(Qt::WA_DeleteOnClose);
+        connect(w, &QObject::destroyed, this, [this] { refresh(); });
+        w->resize(1500, 900);
+        w->show();
+    }
 }
 
 // Untracked files have no committed version to go back to, and a row that is

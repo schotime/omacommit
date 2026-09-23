@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include <QFile>
 #include <QProcess>
 #include <QProcessEnvironment>
 
@@ -321,11 +322,55 @@ QString GitRepo::commitMessage(const QString &hash) const
         .trimmed();
 }
 
+QString GitRepo::gitDir() const
+{
+    return QString::fromUtf8(run({QStringLiteral("rev-parse"), QStringLiteral("--absolute-git-dir")}).out).trimmed();
+}
+
 QString GitRepo::scratchIndexPath() const
 {
-    const QString dir = QString::fromUtf8(
-        run({QStringLiteral("rev-parse"), QStringLiteral("--absolute-git-dir")}).out).trimmed();
+    const QString dir = gitDir();
     return dir.isEmpty() ? QString() : dir + QStringLiteral("/og-amend-index");
+}
+
+// What left the conflicts behind, from the state files git keeps while it waits.
+QString GitRepo::operation() const
+{
+    const QString d = gitDir();
+    if (d.isEmpty())
+        return {};
+    if (QFile::exists(d + QStringLiteral("/rebase-merge")) || QFile::exists(d + QStringLiteral("/rebase-apply")))
+        return QStringLiteral("rebase");
+    if (QFile::exists(d + QStringLiteral("/MERGE_HEAD")))
+        return QStringLiteral("merge");
+    if (QFile::exists(d + QStringLiteral("/CHERRY_PICK_HEAD")))
+        return QStringLiteral("cherry-pick");
+    if (QFile::exists(d + QStringLiteral("/REVERT_HEAD")))
+        return QStringLiteral("revert");
+    return {};
+}
+
+QVector<UnmergedFile> GitRepo::unmerged() const
+{
+    QVector<UnmergedFile> out;
+    // One record per stage: "<mode> <blob> <stage>\t<path>".
+    const auto r = run({QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("-z")});
+    for (const QByteArray &rec : r.out.split('\0')) {
+        const int tab = rec.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = rec.left(tab).split(' ');
+        if (meta.size() < 3)
+            continue;
+        const QString path = QString::fromUtf8(rec.mid(tab + 1));
+        const int stage = meta.at(2).toInt();
+        if (stage < 1 || stage > 3)
+            continue;
+        if (out.isEmpty() || out.constLast().path != path)
+            out.push_back(UnmergedFile{path, {}});
+        out.last().stage[stage] = QString::fromLatin1(meta.at(1));
+    }
+    return out;
 }
 
 // Builds the tree for an amend that drops files the commit currently has.

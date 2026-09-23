@@ -16,6 +16,7 @@ add_executable(og
     src/CommitWindow.cpp
     src/LogGraph.cpp
     src/LogWindow.cpp
+    src/ResolveWindow.cpp
 )
 target_link_libraries(og PRIVATE Qt6::Widgets)
 target_compile_definitions(og PRIVATE OG_VERSION="${PROJECT_VERSION}")

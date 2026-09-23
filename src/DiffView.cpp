@@ -163,6 +163,14 @@ void DiffPane::setLines(const QVector<Line> &lines)
     viewport()->update();
 }
 
+void DiffPane::setKinds(const QVector<Line> &lines)
+{
+    m_lines = lines;
+    updateGutterWidth();
+    viewport()->update();
+    m_gutter->update();
+}
+
 void DiffPane::setColors(const DiffColors &c)
 {
     m_c = c;
@@ -220,6 +228,10 @@ void DiffPane::paintEvent(QPaintEvent *e)
             case Removed: p.fillRect(full, m_c.removed); break;
             case Added:   p.fillRect(full, m_c.added); break;
             case Empty:   p.fillRect(full, QBrush(m_c.empty, Qt::BDiagPattern)); break;
+            case Mine:    p.fillRect(full, m_c.mine); break;
+            case Theirs:  p.fillRect(full, m_c.theirs); break;
+            case Base:    p.fillRect(full, m_c.base); break;
+            case Marker:  p.fillRect(full, m_c.marker); break;
             case Same:    break;
             }
             if (ln.hlEnd > ln.hlStart && ln.hlStart >= 0) {
@@ -261,6 +273,12 @@ void DiffPane::paintGutter(QPaintEvent *e)
             p.fillRect(row, m_c.added);
         else if (ln.kind == Empty)
             p.fillRect(row, QBrush(m_c.empty, Qt::BDiagPattern));
+        else if (ln.kind == Mine)
+            p.fillRect(row, m_c.mine);
+        else if (ln.kind == Theirs)
+            p.fillRect(row, m_c.theirs);
+        else if (ln.kind == Marker)
+            p.fillRect(row, m_c.marker);
         if (ln.number > 0) {
             p.setPen(ln.kind == Same ? m_c.gutterFg : m_c.fg);
             p.drawText(QRectF(0, r.top(), w - 10, r.height()), Qt::AlignRight | Qt::AlignVCenter,
@@ -311,9 +329,24 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     connect(m_rediffTimer, &QTimer::timeout, this, [this] { flushPending(); });
     connect(m_right, &QPlainTextEdit::textChanged, this, [this] { onTyped(); });
 
+    // Each pane can carry a caption (the resolve window names its sides).
+    auto wrap = [](QLabel *caption, DiffPane *pane) {
+        auto *w = new QWidget;
+        auto *l = new QVBoxLayout(w);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(0);
+        caption->setObjectName(QStringLiteral("muted"));
+        caption->setContentsMargins(10, 4, 10, 4);
+        caption->hide();
+        l->addWidget(caption);
+        l->addWidget(pane, 1);
+        return w;
+    };
+    m_leftCaption = new QLabel;
+    m_rightCaption = new QLabel;
     auto *split = new QSplitter(Qt::Horizontal);
-    split->addWidget(m_left);
-    split->addWidget(m_right);
+    split->addWidget(wrap(m_leftCaption, m_left));
+    split->addWidget(wrap(m_rightCaption, m_right));
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
 
@@ -491,10 +524,12 @@ void DiffView::applyTheme()
     c.gutterBg = t.background;
     c.gutterFg = t.muted;
     c.border = t.border;
-    c.removed = Theme::mix(t.background, t.red, soft);
-    c.removedStrong = Theme::mix(t.background, t.red, strong);
-    c.added = Theme::mix(t.background, t.green, soft);
-    c.addedStrong = Theme::mix(t.background, t.green, strong);
+    const QColor left = m_leftTint.isValid() ? m_leftTint : t.red;
+    const QColor right = m_rightTint.isValid() ? m_rightTint : t.green;
+    c.removed = Theme::mix(t.background, left, soft);
+    c.removedStrong = Theme::mix(t.background, left, strong);
+    c.added = Theme::mix(t.background, right, soft);
+    c.addedStrong = Theme::mix(t.background, right, strong);
     c.empty = t.border;
     m_left->setColors(c);
     m_right->setColors(c);
@@ -833,4 +868,42 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
 
     menu->exec(pane->viewport()->mapToGlobal(pos));
     delete menu;
+}
+
+// ---------------------------------------------------------------- resolve window support
+
+void DiffView::setPaneCaptions(const QString &left, const QString &right)
+{
+    m_leftCaption->setText(left);
+    m_rightCaption->setText(right);
+    m_leftCaption->setVisible(!left.isEmpty());
+    m_rightCaption->setVisible(!right.isEmpty());
+}
+
+void DiffView::setSideTints(const QColor &left, const QColor &right)
+{
+    m_leftTint = left;
+    m_rightTint = right;
+    applyTheme();
+}
+
+void DiffView::setNavShortcutsEnabled(bool enabled)
+{
+    m_prev->setShortcut(enabled ? QKeySequence(QStringLiteral("Alt+Up")) : QKeySequence());
+    m_next->setShortcut(enabled ? QKeySequence(QStringLiteral("Alt+Down")) : QKeySequence());
+}
+
+int DiffView::rowForLine(bool right, int lineNumber) const
+{
+    const QVector<DiffPane::Line> &rows = right ? m_r : m_l;
+    for (int i = 0; i < rows.size(); ++i)
+        if (rows.at(i).number == lineNumber)
+            return i;
+    return -1;
+}
+
+void DiffView::revealRow(int row)
+{
+    if (row >= 0)
+        gotoRow(row);
 }

@@ -16,13 +16,14 @@ class QToolButton;
 struct DiffColors {
     QColor bg, fg, gutterBg, gutterFg, border;
     QColor removed, removedStrong, added, addedStrong, empty;
+    QColor mine, theirs, marker, base;   // conflict sections, in the resolve window
 };
 
 // One side of the side-by-side diff: read-only editor with a line-number
 // gutter, full-width change backgrounds and word-level highlights.
 class DiffPane : public QPlainTextEdit {
 public:
-    enum Kind { Same, Removed, Added, Empty };
+    enum Kind { Same, Removed, Added, Empty, Mine, Theirs, Base, Marker };
     static constexpr int FillerState = 1;   // QTextBlock::userState of a filler row
     struct Line {
         QString text;
@@ -34,6 +35,9 @@ public:
 
     explicit DiffPane(QWidget *parent = nullptr);
     void setLines(const QVector<Line> &lines);
+    // Recolours the rows without touching the text -- for an editable pane,
+    // where replacing the text would lose the cursor and the undo history.
+    void setKinds(const QVector<Line> &lines);
     void setColors(const DiffColors &c);
 
     int gutterWidth() const;
@@ -72,6 +76,13 @@ public:
     void applyTheme();
 
     void setEditable(bool editable);
+    // Resolve window: a caption over each pane, tints instead of red/green,
+    // and no Alt+Up/Down (the window uses them to move between conflicts).
+    void setPaneCaptions(const QString &left, const QString &right);
+    void setSideTints(const QColor &left, const QColor &right);
+    void setNavShortcutsEnabled(bool enabled);
+    int rowForLine(bool right, int lineNumber) const;
+    void revealRow(int row);
     bool isDirty() const;
     bool save();       // flushes pending typing, then onSave; true when nothing is left unsaved
     void discard();    // forget unsaved edits
@@ -117,6 +128,9 @@ private:
     QToolButton *m_save;
     QToolButton *m_prev;
     QToolButton *m_next;
+    QLabel *m_leftCaption;
+    QLabel *m_rightCaption;
+    QColor m_leftTint, m_rightTint;
     QTimer *m_rediffTimer;
 
     QString m_name;

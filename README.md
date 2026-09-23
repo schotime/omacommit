@@ -44,7 +44,7 @@ Launched from a menu with no repo, it asks you to pick one.
 | --- | --- |
 | `og commit` | Working — the dialog below. Also the default when none is given. |
 | `og log` | Working — history browser, see below. |
-| `og resolve` | Planned |
+| `og resolve` | Working — conflict resolution, see below. |
 
 `og --help` lists these; `og --version` prints the version.
 
@@ -120,6 +120,31 @@ against their first parent. History loads as you scroll, and *All branches*
 switches between every branch, remote and tag and only the current branch.
 F5 reloads, Esc closes.
 
+## Resolve
+
+`og resolve [path]` resolves merge conflicts, TortoiseGitMerge style: the
+conflicted files on the left, the two sides on top (aligned, read-only) and
+the merged file below (editable, what gets saved). Pass a conflicted file to
+open it first; `og commit` also offers **Resolve…** on a conflicted file.
+
+- The sides are named by what they are, never "ours"/"theirs" — which git
+  swaps during a rebase. Merging: *Mine — HEAD (main)* and *Theirs —
+  feature/x*. Rebasing: *Upstream — main* and *Mine — replaying abc123 …*.
+  Every button uses the same names, and each side keeps one colour in all
+  three panes.
+- A conflict is git's `<<<<<<< / ======= / >>>>>>>` block in the file. For
+  each one: *Use theirs*, *Use mine*, or both in either order; or edit the
+  merged text by hand — delete the markers and it counts as resolved. Alt+↓ /
+  Alt+↑ move between conflicts and the top panes follow. Ctrl+Z undoes.
+- *Whole file ▾* takes one side for the entire file.
+- **Save** (Ctrl+S) writes the file; **Mark resolved** saves and stages it,
+  asking first if conflicts remain.
+- Binary files, and files deleted on one side, get whole-file choices: use
+  or keep one side, or delete it.
+- Once nothing is left unresolved, **Commit merge…** opens `og commit` with
+  git's prepared message (also for cherry-picks and reverts). A rebase
+  continues with `git rebase --continue`.
+
 ## Theming
 
 Colors come from the active theme's `colors.toml`
@@ -136,5 +161,4 @@ Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (remo
 - Syntax highlighting in the diff
 - More file context menu entries: add to .gitignore, open in editor
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
-- `og resolve`
 - PKGBUILD for the AUR

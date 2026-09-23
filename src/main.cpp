@@ -1,6 +1,7 @@
 #include "CommitWindow.h"
 #include "GitRepo.h"
 #include "LogWindow.h"
+#include "ResolveWindow.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -26,7 +27,7 @@ void printUsage()
                 "Usage:\n"
                 "  og [commit] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
                 "  og log [path]        History: commit graph, changed files and their diffs\n"
-                "  og resolve [path]    Not implemented yet\n"
+                "  og resolve [path]    Resolve merge conflicts (path may name a conflicted file)\n"
                 "\n"
                 "Options:\n"
                 "  -h, --help           Show this help\n"
@@ -82,18 +83,16 @@ int main(int argc, char *argv[])
             command = args.takeFirst();
         }
     }
-    if (command == QStringLiteral("resolve")) {
-        std::fprintf(stderr, "og: '%s' is not implemented yet.\n", qPrintable(command));
-        return 2;
-    }
-
     Theme::instance().load();
     Theme::instance().apply();
 
     const bool hasPath = !args.isEmpty();
     QString start = hasPath ? args.first() : QDir::currentPath();
-    if (QFileInfo(start).isFile())
+    QString file;   // og resolve some/file: open that one first
+    if (QFileInfo(start).isFile()) {
+        file = QFileInfo(start).absoluteFilePath();
         start = QFileInfo(start).absolutePath();
+    }
 
     QString root = GitRepo::findRoot(start);
     if (root.isEmpty() && !hasPath) {
@@ -110,6 +109,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (command == QStringLiteral("resolve")) {
+        ResolveWindow window(root, file);
+        window.resize(1500, 900);
+        window.show();
+        return app.exec();
+    }
     if (command == QStringLiteral("log")) {
         LogWindow window(root);
         window.resize(1400, 860);

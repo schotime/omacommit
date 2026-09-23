@@ -37,6 +37,14 @@ struct RefLabel {
     bool current = false;   // the branch HEAD is on
 };
 
+// A path git could not merge, with the blob at each index stage it has:
+// 1 = common ancestor, 2 = HEAD's side, 3 = the side being brought in.
+struct UnmergedFile {
+    QString path;
+    QString stage[4];   // [1]..[3]; empty when that side has no such file
+    bool has(int s) const { return !stage[s].isEmpty(); }
+};
+
 struct GitResult {
     int exitCode = -1;
     QByteArray out;
@@ -78,6 +86,11 @@ public:
     QHash<QString, QVector<RefLabel>> refsByCommit() const;
     QString commitMessage(const QString &hash) const;
     QString emptyTree() const;
+
+    // Conflicts.
+    QString gitDir() const;
+    QString operation() const;   // "merge", "rebase", "cherry-pick", "revert" or empty
+    QVector<UnmergedFile> unmerged() const;
     QString headParent() const;
     QString scratchIndexPath() const;
     GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,
