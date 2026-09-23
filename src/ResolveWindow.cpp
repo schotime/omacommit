@@ -2,6 +2,7 @@
 #include "CommitWindow.h"
 #include "DiffView.h"
 #include "ElidedLabel.h"
+#include "FlowLayout.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -210,22 +211,30 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     mh->addWidget(m_prevBtn);
     mh->addWidget(m_nextBtn);
     ml->addLayout(mh);
-    auto *tools = new QHBoxLayout;
+    // The pick buttons wrap onto a second row when the pane is narrow, rather
+    // than setting its minimum width -- one long row held the window's divider
+    // in place. Save and Mark resolved stay together on the right.
+    auto *picks = new QWidget;
+    auto *pickFlow = new FlowLayout(picks);
     if (m_mineIsIncoming) {   // upstream on the left, yours on the right
-        tools->addWidget(m_useCur);
-        tools->addWidget(m_useInc);
-        tools->addWidget(m_useCurInc);
-        tools->addWidget(m_useIncCur);
+        pickFlow->addWidget(m_useCur);
+        pickFlow->addWidget(m_useInc);
+        pickFlow->addWidget(m_useCurInc);
+        pickFlow->addWidget(m_useIncCur);
     } else {
-        tools->addWidget(m_useInc);
-        tools->addWidget(m_useCur);
-        tools->addWidget(m_useIncCur);
-        tools->addWidget(m_useCurInc);
+        pickFlow->addWidget(m_useInc);
+        pickFlow->addWidget(m_useCur);
+        pickFlow->addWidget(m_useIncCur);
+        pickFlow->addWidget(m_useCurInc);
     }
-    tools->addWidget(m_wholeBtn);
-    tools->addStretch();
-    tools->addWidget(m_saveBtn);
-    tools->addWidget(m_resolvedBtn);
+    pickFlow->addWidget(m_wholeBtn);
+    QSizePolicy sp(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    sp.setHeightForWidth(true);
+    picks->setSizePolicy(sp);
+    auto *tools = new QHBoxLayout;
+    tools->addWidget(picks, 1);
+    tools->addWidget(m_saveBtn, 0, Qt::AlignTop);
+    tools->addWidget(m_resolvedBtn, 0, Qt::AlignTop);
     ml->addLayout(tools);
     ml->addWidget(m_merged, 1);
 
