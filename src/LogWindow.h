@@ -55,7 +55,10 @@ private:
     GraphLayout m_layout;
     QVector<FileEntry> m_commitFiles;
     QString m_shownCommit;
-    int m_colWidth[4] = {0, 0, 0, 0};   // what Author, Date and Commit need when shown
+    int m_colWidth[4] = {0, 0, 0, 0};   // what Author, Date and Commit need
+    int m_subjectMin = 0;      // the Graph/subject column's default floor
+    int m_subjectDragged = 0;  // a width set by dragging the column, kept from then on
+    bool m_fitting = false;
     bool m_exhausted = false;
     bool m_loading = false;
 };

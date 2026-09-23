@@ -186,7 +186,14 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_commits->setItemDelegateForColumn(0, new GraphDelegate(this));
     m_commits->viewport()->installEventFilter(this);   // hide columns as it narrows
     m_commits->header()->setStretchLastSection(false);
-    m_commits->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    // Sized by fitColumns rather than stretched, so the table can be wider
+    // than the pane and scroll sideways to the other columns.
+    m_commits->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_commits->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(m_commits->header(), &QHeaderView::sectionResized, this, [this](int section, int, int size) {
+        if (section == 0 && !m_fitting)
+            m_subjectDragged = size;
+    });
     m_commits->header()->setSectionResizeMode(1, QHeaderView::Interactive);
     m_commits->header()->setSectionResizeMode(2, QHeaderView::Interactive);
     m_commits->header()->setSectionResizeMode(3, QHeaderView::Interactive);
@@ -526,28 +533,28 @@ void LogWindow::sizeColumns()
     m_colWidth[3] = hexWidth * 8 + pad;
     for (int col = 1; col <= 3; ++col)
         m_commits->setColumnWidth(col, m_colWidth[col]);
+    // Room for a readable subject -- about 36 characters -- plus a few lanes of graph.
+    m_subjectMin = fm.averageCharWidth() * 36 + fm.height() * 6;
     fitColumns();
 }
 
-// The subject is what the log is read for, so it gets the room: when it would
-// have less than ~55% of the table, Author goes, then Date, then the hash --
-// all three are still in the Commit panel and the subject's tooltip -- and
-// they come back as the table widens.
+// The Graph/subject column -- what the log is read for -- gets a generous
+// width: whatever the pane has left after the other columns, but never less
+// than its floor. When that doesn't fit, the table scrolls sideways to reach
+// Author, Date and Commit rather than squeezing the subject. A width set by
+// dragging the column is kept.
 void LogWindow::fitColumns()
 {
     if (!m_colWidth[1])
         return;
-    const int total = m_commits->viewport()->width();
-    const int minSubject = qMax(320, int(total * 0.55));
-    int used = 0;
+    int others = 0;
     for (int col = 1; col <= 3; ++col)
-        used += m_colWidth[col];
-    for (int col : {1, 2, 3}) {   // hide in this order until the subject has room
-        const bool hide = total - used < minSubject;
-        m_commits->header()->setSectionHidden(col, hide);
-        if (hide)
-            used -= m_colWidth[col];
-    }
+        others += m_colWidth[col];
+    const int visible = m_commits->viewport()->width();
+    const int fill = visible - others;
+    m_fitting = true;   // never wider than the pane itself: the subject should always be readable without scrolling
+    m_commits->setColumnWidth(0, m_subjectDragged ? m_subjectDragged : qMax(qMin(m_subjectMin, visible), fill));
+    m_fitting = false;
 }
 
 bool LogWindow::eventFilter(QObject *watched, QEvent *event)
