@@ -52,6 +52,7 @@ private:
     void rebuildHistoryMenu();
     void saveToHistory(const QString &message);
     QString draftKey() const;
+    QString diffBase() const;
     QColor statusColor(const FileEntry &e) const;
 
     GitRepo m_repo;
@@ -75,10 +76,11 @@ private:
     DiffView *m_diff;
 
     // The file open in the diff view: its path, its bytes as loaded (to spot
-    // outside changes before saving) and HEAD's copy (to re-diff edits against).
+    // outside changes before saving) and the left side's copy -- HEAD's, or
+    // the parent's when amending -- to re-diff edits against.
     QString m_diffPath;
     QByteArray m_diffLoaded;
-    QByteArray m_diffHead;
+    QByteArray m_diffBase;
     bool m_diffCr = false;   // git's own diff saw CRLF on the file's side
     std::unique_ptr<QTemporaryDir> m_tmp;
 

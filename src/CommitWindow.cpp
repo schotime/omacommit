@@ -230,8 +230,10 @@ void CommitWindow::refresh()
         const QVector<FileEntry> committed = m_repo.lastCommitFiles();
         for (const FileEntry &e : committed) {
             const auto it = byPath.constFind(e.path);
-            if (it != byPath.constEnd())
+            if (it != byPath.constEnd()) {
                 m_entries[it.value()].inLastCommit = true;
+                m_entries[it.value()].commitStatus = e.commitStatus;
+            }
             else
                 m_entries.push_back(e);
         }
@@ -302,12 +304,13 @@ void CommitWindow::showCurrentDiff()
 
     m_diffPath = path;
     m_diffLoaded.clear();
-    m_diffHead.clear();
+    m_diffBase.clear();
     if (!it) {
         m_diff->showMessage({}, tr("Select a file to see its changes"));
         return;
     }
     const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
+    const QString base = diffBase();
     bool editable = canEditInDiff(e);
     if (editable) {
         QFile f(QDir(m_repo.root()).filePath(e.path));
@@ -321,12 +324,12 @@ void CommitWindow::showCurrentDiff()
             editable = false;
     }
     if (editable) {
-        const GitResult head = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
-                                           QStringLiteral("HEAD:") + e.path});
-        editable = head.ok();
-        m_diffHead = head.out;
+        const GitResult left = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
+                                           base + QLatin1Char(':') + e.path});
+        editable = left.ok();
+        m_diffBase = left.out;
     }
-    const QByteArray diff = m_repo.diff(e);
+    const QByteArray diff = m_repo.diff(e, base);
     // Whether git's diff kept the CRs (it drops them when core.autocrlf
     // normalises the file). Re-diffs of edits must see the file the same way,
     // or one keystroke would turn every line of a CRLF file into a change.
@@ -344,13 +347,25 @@ void CommitWindow::showCurrentDiff()
         m_diff->setEditable(false);
 }
 
+// What the left side of the diff is. Amending replaces HEAD, so the commit
+// that results is measured against HEAD's parent; otherwise against HEAD.
+QString CommitWindow::diffBase() const
+{
+    if (m_amend->isChecked() && m_repo.hasHead())
+        return m_repo.headParent();
+    return QStringLiteral("HEAD");
+}
+
 // Only plain modifications: for new, deleted, renamed or conflicted files the
-// left side is missing or is not "the same file before", and for a file that
-// is only in the commit being amended there is nothing on disk to edit.
+// left side is missing or is not "the same file before". When amending, a file
+// the commit changed counts too, as long as the commit modified it rather than
+// adding, deleting or renaming it.
 bool CommitWindow::canEditInDiff(const FileEntry &e) const
 {
     auto plain = [](QChar c) { return c == u' ' || c == u'M'; };
-    if (!e.worktreeChange() || !plain(e.index) || !plain(e.worktree))
+    if (!plain(e.index) || !plain(e.worktree))
+        return false;
+    if (e.inLastCommit ? e.commitStatus != u'M' : !e.worktreeChange())
         return false;
     return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
 }
@@ -370,7 +385,7 @@ QByteArray CommitWindow::rediffEdited(const QStringList &lines)
     QByteArray text = lines.join(eol).toUtf8();
     if (!lines.isEmpty() && m_diffLoaded.endsWith('\n'))
         text += eol.toUtf8();
-    a.write(m_diffHead);
+    a.write(m_diffBase);
     b.write(text);
     a.close();
     b.close();
@@ -642,6 +657,13 @@ void CommitWindow::updateCounts()
 
 void CommitWindow::onAmendToggled(bool on)
 {
+    // The diff's left side switches between HEAD and its parent, which unsaved
+    // edits were measured against; settle them before it moves.
+    if (m_diff->isDirty() && !resolveUnsavedEdits()) {
+        QSignalBlocker block(m_amend);
+        m_amend->setChecked(!on);
+        return;
+    }
     if (on) {
         m_lastMessage = m_repo.lastCommitMessage();
         if (m_message->toPlainText().trimmed().isEmpty())

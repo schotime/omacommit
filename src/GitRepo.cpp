@@ -204,6 +204,7 @@ QVector<FileEntry> GitRepo::lastCommitFiles() const
             break;
         FileEntry e;
         e.inLastCommit = true;
+        e.commitStatus = QChar::fromLatin1(code);
         if (paired) {
             e.oldPath = QString::fromUtf8(parts.at(i + 1));
             e.path = QString::fromUtf8(parts.at(i + 2));
@@ -271,7 +272,7 @@ QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
                 QStringLiteral("-U1000000"), QStringLiteral("--"), a, b}).out;
 }
 
-QByteArray GitRepo::diff(const FileEntry &f) const
+QByteArray GitRepo::diff(const FileEntry &f, const QString &base) const
 {
     // Full-file context so the side-by-side view shows the whole file.
     QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
@@ -281,16 +282,11 @@ QByteArray GitRepo::diff(const FileEntry &f) const
         args << QStringLiteral("--no-index") << QStringLiteral("--") << QStringLiteral("/dev/null") << f.path;
         return run(args).out;   // exits 1 when files differ; that's expected
     }
-    if (f.inLastCommit && !f.worktreeChange()) {
-        // Nothing pending for it; show what the commit being amended did.
-        args << QStringLiteral("-M") << headParent() << QStringLiteral("HEAD") << QStringLiteral("--");
-        if (!f.oldPath.isEmpty())
-            args << f.oldPath;
-        args << f.path;
-        return run(args).out;
-    }
-    // Working tree vs HEAD: exactly what a commit of this file would record.
-    args << QStringLiteral("-M") << (hasHead() ? QStringLiteral("HEAD") : emptyTree()) << QStringLiteral("--");
+    // Working tree vs `base` -- HEAD by default, or the parent when amending,
+    // since the amended commit replaces HEAD. Either way, exactly what the
+    // commit will record for this file.
+    const QString from = !base.isEmpty() ? base : hasHead() ? QStringLiteral("HEAD") : emptyTree();
+    args << QStringLiteral("-M") << from << QStringLiteral("--");
     if (!f.oldPath.isEmpty())
         args << f.oldPath;
     args << f.path;

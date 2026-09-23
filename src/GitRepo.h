@@ -13,6 +13,7 @@ struct FileEntry {
     QChar index = u' ';       // porcelain X
     QChar worktree = u' ';    // porcelain Y
     bool inLastCommit = false;   // part of the commit being amended
+    QChar commitStatus = u' ';   // what that commit did to it: M, A, D, R, ...
 
     bool untracked() const { return index == u'?'; }
     bool worktreeChange() const { return index != u' ' || worktree != u' '; }
@@ -58,7 +59,7 @@ public:
     GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,
                                 const QStringList &exclude) const;
     void refreshIndexAfterAmend(const QStringList &paths) const;
-    QByteArray diff(const FileEntry &f) const;
+    QByteArray diff(const FileEntry &f, const QString &base = QString()) const;
     QByteArray diffFiles(const QString &a, const QString &b) const;
     QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 
