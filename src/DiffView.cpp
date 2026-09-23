@@ -810,6 +810,12 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
         menu->insertAction(before, a);
         return a;
     };
+    // A view with nowhere to save edits (history in the log) has nothing to offer here.
+    if (!onSave) {
+        menu->exec(pane->viewport()->mapToGlobal(pos));
+        delete menu;
+        return;
+    }
     add(tr("Use left text block"), m_editable && onChange, [this, row] { take(Take::Block, row); });
     add(tr("Use left line"), m_editable && onChange, [this, row] { take(Take::Line, row); });
     add(tr("Use text block from left before right"), m_editable && onChange,

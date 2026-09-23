@@ -1,0 +1,56 @@
+#pragma once
+
+#include "GitRepo.h"
+#include "LogGraph.h"
+
+#include <QHash>
+#include <QWidget>
+
+class DiffView;
+class QCheckBox;
+class QLabel;
+class QPlainTextEdit;
+class QTreeWidget;
+
+// History browser: the commit graph with branch and tag names on the left, the
+// selected commit's details and changed files under it, and the selected
+// file's diff against the commit's parent on the right.
+class LogWindow : public QWidget {
+    Q_OBJECT
+public:
+    explicit LogWindow(const QString &root, QWidget *parent = nullptr);
+
+    // Read by the graph delegate.
+    const QVector<LogCommit> &commits() const { return m_log; }
+    const QVector<GraphRow> &graph() const { return m_graph; }
+    const QHash<QString, QVector<RefLabel>> &refs() const { return m_refs; }
+
+private:
+    void reload();
+    void loadMore();
+    void showCommit();
+    void showFileDiff();
+    void applyTheme();
+    void sizeColumns();
+    QString baseOf(const LogCommit &c) const;
+    QColor statusColor(QChar status) const;
+
+    GitRepo m_repo;
+    QLabel *m_header;
+    QLabel *m_repoPath;
+    QCheckBox *m_allBranches;
+    QTreeWidget *m_commits;
+    QPlainTextEdit *m_details;
+    QLabel *m_fileCount;
+    QTreeWidget *m_files;
+    DiffView *m_diff;
+
+    QVector<LogCommit> m_log;
+    QVector<GraphRow> m_graph;
+    QHash<QString, QVector<RefLabel>> m_refs;
+    GraphLayout m_layout;
+    QVector<FileEntry> m_commitFiles;
+    QString m_shownCommit;
+    bool m_exhausted = false;
+    bool m_loading = false;
+};

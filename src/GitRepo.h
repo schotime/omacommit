@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -19,6 +20,21 @@ struct FileEntry {
     bool worktreeChange() const { return index != u' ' || worktree != u' '; }
     QString statusText() const;
     QString worktreeStatusText() const;
+};
+
+struct LogCommit {
+    QString hash;
+    QStringList parents;
+    QString author, email;
+    qint64 time = 0;   // author date, seconds since the epoch
+    QString subject;
+};
+
+struct RefLabel {
+    enum Kind { Head, Branch, Remote, Tag };
+    QString name;
+    Kind kind = Branch;
+    bool current = false;   // the branch HEAD is on
 };
 
 struct GitResult {
@@ -54,6 +70,14 @@ public:
 
     QVector<FileEntry> status() const;
     QVector<FileEntry> lastCommitFiles() const;
+    QVector<FileEntry> changedFiles(const QString &from, const QString &to) const;
+    QByteArray diffBetween(const QString &from, const QString &to, const FileEntry &f) const;
+
+    // History, newest first in topological order, `count` at a time.
+    QVector<LogCommit> log(int skip, int count, bool allRefs) const;
+    QHash<QString, QVector<RefLabel>> refsByCommit() const;
+    QString commitMessage(const QString &hash) const;
+    QString emptyTree() const;
     QString headParent() const;
     QString scratchIndexPath() const;
     GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,
@@ -64,6 +88,5 @@ public:
     QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 
 private:
-    QString emptyTree() const;
     QString m_root;
 };

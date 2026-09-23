@@ -1,5 +1,6 @@
 #include "CommitWindow.h"
 #include "GitRepo.h"
+#include "LogWindow.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -24,7 +25,7 @@ void printUsage()
                 "\n"
                 "Usage:\n"
                 "  og [commit] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
-                "  og log [path]        Not implemented yet\n"
+                "  og log [path]        History: commit graph, changed files and their diffs\n"
                 "  og resolve [path]    Not implemented yet\n"
                 "\n"
                 "Options:\n"
@@ -81,7 +82,7 @@ int main(int argc, char *argv[])
             command = args.takeFirst();
         }
     }
-    if (command != QStringLiteral("commit")) {
+    if (command == QStringLiteral("resolve")) {
         std::fprintf(stderr, "og: '%s' is not implemented yet.\n", qPrintable(command));
         return 2;
     }
@@ -109,6 +110,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (command == QStringLiteral("log")) {
+        LogWindow window(root);
+        window.resize(1400, 860);
+        window.show();
+        return app.exec();
+    }
     CommitWindow window(root);
     window.resize(1400, 860);
     window.show();

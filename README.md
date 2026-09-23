@@ -43,7 +43,7 @@ Launched from a menu with no repo, it asks you to pick one.
 | Subcommand | Status |
 | --- | --- |
 | `og commit` | Working — the dialog below. Also the default when none is given. |
-| `og log` | Planned |
+| `og log` | Working — history browser, see below. |
 | `og resolve` | Planned |
 
 `og --help` lists these; `og --version` prints the version.
@@ -109,6 +109,17 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
   saved per repo.
 
+## Log
+
+`og log` shows the history as a graph: each commit with its branch and tag
+names (current branch bold, local branches, remotes and tags in their own
+colours) and a ring on the commit HEAD is on. Selecting a commit shows its
+message and details, and the files it changed under the graph; selecting a
+file shows its diff against the commit's parent on the right. Merges are shown
+against their first parent. History loads as you scroll, and *All branches*
+switches between every branch, remote and tag and only the current branch.
+F5 reloads, Esc closes.
+
 ## Theming
 
 Colors come from the active theme's `colors.toml`
@@ -125,5 +136,5 @@ Colors used: `background`, `foreground`, `accent`, `selection_*`, `color1` (remo
 - Syntax highlighting in the diff
 - More file context menu entries: add to .gitignore, open in editor
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
-- `og log` and `og resolve`
+- `og resolve`
 - PKGBUILD for the AUR

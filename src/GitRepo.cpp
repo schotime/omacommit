@@ -1,5 +1,7 @@
 #include "GitRepo.h"
 
+#include <algorithm>
+
 #include <QProcess>
 #include <QProcessEnvironment>
 
@@ -181,12 +183,21 @@ QString GitRepo::headParent() const
 // drop any of it.
 QVector<FileEntry> GitRepo::lastCommitFiles() const
 {
-    QVector<FileEntry> out;
     if (!hasHead())
-        return out;
+        return {};
+    QVector<FileEntry> out = changedFiles(headParent(), QStringLiteral("HEAD"));
+    for (FileEntry &e : out)
+        e.inLastCommit = true;
+    return out;
+}
+
+// Files that differ between two trees, with what happened to each in
+// commitStatus (M, A, D, R, C, T).
+QVector<FileEntry> GitRepo::changedFiles(const QString &from, const QString &to) const
+{
+    QVector<FileEntry> out;
     const auto r = run({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
-                        QStringLiteral("--name-status"), QStringLiteral("-z"), QStringLiteral("-M"),
-                        headParent(), QStringLiteral("HEAD")});
+                        QStringLiteral("--name-status"), QStringLiteral("-z"), QStringLiteral("-M"), from, to});
     if (!r.ok())
         return out;
 
@@ -203,7 +214,6 @@ QVector<FileEntry> GitRepo::lastCommitFiles() const
         if (paired && i + 2 >= parts.size())
             break;
         FileEntry e;
-        e.inLastCommit = true;
         e.commitStatus = QChar::fromLatin1(code);
         if (paired) {
             e.oldPath = QString::fromUtf8(parts.at(i + 1));
@@ -215,6 +225,100 @@ QVector<FileEntry> GitRepo::lastCommitFiles() const
         i += paired ? 3 : 2;
     }
     return out;
+}
+
+QByteArray GitRepo::diffBetween(const QString &from, const QString &to, const FileEntry &f) const
+{
+    QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                     QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--histogram"),
+                     QStringLiteral("-U1000000"), QStringLiteral("-M"), from, to, QStringLiteral("--")};
+    if (!f.oldPath.isEmpty())
+        args << f.oldPath;
+    args << f.path;
+    return run(args).out;
+}
+
+QVector<LogCommit> GitRepo::log(int skip, int count, bool allRefs) const
+{
+    QVector<LogCommit> out;
+    if (!hasHead())
+        return out;
+    // Unit and record separators can't appear in any of these fields.
+    QStringList args{QStringLiteral("log"), QStringLiteral("--topo-order"), QStringLiteral("--no-color"),
+                     QStringLiteral("--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1e"),
+                     QStringLiteral("--skip=%1").arg(skip), QStringLiteral("-n"), QString::number(count)};
+    if (allRefs)
+        args << QStringLiteral("--branches") << QStringLiteral("--remotes") << QStringLiteral("--tags");
+    args << QStringLiteral("HEAD");
+    const auto r = run(args, {}, 120000);
+    if (!r.ok())
+        return out;
+    for (const QByteArray &rec : r.out.split('\x1e')) {
+        const QList<QByteArray> f = rec.trimmed().split('\x1f');
+        if (f.size() < 6)
+            continue;
+        LogCommit c;
+        c.hash = QString::fromLatin1(f.at(0));
+        c.parents = QString::fromLatin1(f.at(1)).split(u' ', Qt::SkipEmptyParts);
+        c.author = QString::fromUtf8(f.at(2));
+        c.email = QString::fromUtf8(f.at(3));
+        c.time = f.at(4).toLongLong();
+        c.subject = QString::fromUtf8(f.at(5));
+        out.push_back(c);
+    }
+    return out;
+}
+
+QHash<QString, QVector<RefLabel>> GitRepo::refsByCommit() const
+{
+    QHash<QString, QVector<RefLabel>> out;
+    // %(*objectname) is the commit an annotated tag points at.
+    const auto r = run({QStringLiteral("for-each-ref"),
+                        QStringLiteral("--format=%(objectname)%00%(*objectname)%00%(refname)%00%(refname:short)"),
+                        QStringLiteral("refs/heads"), QStringLiteral("refs/remotes"), QStringLiteral("refs/tags")});
+    const QString current = branch();
+    for (const QByteArray &line : r.out.split('\n')) {
+        const QList<QByteArray> f = line.split('\0');
+        if (f.size() < 4)
+            continue;
+        const QString full = QString::fromUtf8(f.at(2));
+        const QString name = QString::fromUtf8(f.at(3));
+        RefLabel ref;
+        ref.name = name;
+        if (full.startsWith(QLatin1String("refs/heads/"))) {
+            ref.kind = RefLabel::Branch;
+            ref.current = name == current;
+        } else if (full.startsWith(QLatin1String("refs/remotes/"))) {
+            if (full.endsWith(QLatin1String("/HEAD")))
+                continue;   // origin/HEAD just repeats the default branch
+            ref.kind = RefLabel::Remote;
+        } else {
+            ref.kind = RefLabel::Tag;
+        }
+        const QByteArray peeled = f.at(1);
+        out[QString::fromLatin1(peeled.isEmpty() ? f.at(0) : peeled)].push_back(ref);
+    }
+    if (current.isEmpty() && hasHead()) {   // detached: say where HEAD is
+        const QString head = QString::fromLatin1(run({QStringLiteral("rev-parse"), QStringLiteral("HEAD")}).out).trimmed();
+        RefLabel ref;
+        ref.name = QStringLiteral("HEAD");
+        ref.kind = RefLabel::Head;
+        ref.current = true;
+        out[head].prepend(ref);
+    }
+    for (auto &refs : out)   // current branch first, then branches, remotes, tags
+        std::stable_sort(refs.begin(), refs.end(), [](const RefLabel &a, const RefLabel &b) {
+            if (a.current != b.current)
+                return a.current;
+            return a.kind < b.kind;
+        });
+    return out;
+}
+
+QString GitRepo::commitMessage(const QString &hash) const
+{
+    return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%B"), hash}).out)
+        .trimmed();
 }
 
 QString GitRepo::scratchIndexPath() const
