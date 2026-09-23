@@ -29,18 +29,20 @@ GraphRow GraphLayout::add(const QString &hash, const QStringList &parents)
         if (lane == hash)
             lane.clear();
 
-    // Bottom half: parents. One that some lane is already heading for is
-    // joined to that lane rather than given a parallel one; otherwise the
-    // first parent carries on in this column and the rest branch off.
+    // Bottom half: parents. The first parent always carries on straight down
+    // this column, so a branch's own history reads as one line -- even when
+    // another lane is heading for the same commit; the two meet at its dot.
+    // Further parents (the branches a merge brought in) join a lane already
+    // heading for them, or branch off into a new one.
     QVector<bool> fromHere(m_lanes.size(), false);
     for (int p = 0; p < parents.size(); ++p) {
         const QString &parent = parents.at(p);
-        int lane = m_lanes.indexOf(parent);
-        if (lane < 0) {
-            lane = (p == 0 && m_lanes.at(col).isEmpty()) ? col : freeLane();
-            m_lanes[lane] = parent;
+        int lane = p == 0 ? col : m_lanes.indexOf(parent);
+        if (lane < 0 || (p > 0 && fromHere.value(lane))) {
+            lane = freeLane();
             fromHere.resize(m_lanes.size());
         }
+        m_lanes[lane] = parent;
         fromHere[lane] = true;
         row.bottom.push_back({col, lane});
     }
