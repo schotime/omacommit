@@ -1,5 +1,6 @@
 #include "LogWindow.h"
 #include "DiffView.h"
+#include "ElidedLabel.h"
 #include "Theme.h"
 
 #include <QCheckBox>
@@ -164,7 +165,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_header = new QLabel;
     m_header->setObjectName(QStringLiteral("title"));
     m_header->setTextFormat(Qt::RichText);
-    m_repoPath = new QLabel(root);
+    m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
     m_allBranches = new QCheckBox(tr("All branches"));
     m_allBranches->setChecked(true);

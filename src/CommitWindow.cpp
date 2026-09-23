@@ -1,5 +1,6 @@
 #include "CommitWindow.h"
 #include "DiffView.h"
+#include "ElidedLabel.h"
 #include "MessageEdit.h"
 #include "ResolveWindow.h"
 #include "Theme.h"
@@ -51,7 +52,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_header = new QLabel;
     m_header->setObjectName(QStringLiteral("title"));
     m_header->setTextFormat(Qt::RichText);
-    m_repoPath = new QLabel(root);
+    m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
 
     m_historyBtn = new QToolButton;

@@ -1,6 +1,7 @@
 #include "ResolveWindow.h"
 #include "CommitWindow.h"
 #include "DiffView.h"
+#include "ElidedLabel.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -97,11 +98,8 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_subtitle->setWordWrap(true);
     m_subtitle->setTextFormat(Qt::RichText);
     m_subtitle->setVisible(!m_opText.isEmpty());
-    auto *repoPath = new QLabel(root);
+    auto *repoPath = new ElidedLabel(root);
     repoPath->setObjectName(QStringLiteral("muted"));
-    repoPath->setToolTip(root);
-    // A long path must not set the panel's width; it is clipped instead.
-    repoPath->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     m_files = new QTreeWidget;
     m_files->setColumnCount(2);
