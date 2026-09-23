@@ -597,6 +597,7 @@ void DiffView::applyTheme()
     m_left->setColors(c);
     m_right->setColors(c);
     m_inline->setColors(c);
+    updateMode();   // the mode icon's fallback colour follows the theme
     updateStats();
 }
 
@@ -1047,11 +1048,17 @@ void DiffView::buildInline()
 void DiffView::updateMode()
 {
     const bool inl = inlineWanted();
-    m_modeBtn->setText(inl ? (m_prefInline ? tr("Inline") : tr("Inline · narrow")) : tr("Side by side"));
-    m_modeBtn->setToolTip(inl ? (m_prefInline ? tr("Showing one column (read-only). Click for side by side.")
-                                              : tr("Too narrow for two sides, so showing one column (read-only). "
-                                                   "Click for side by side anyway."))
-                              : tr("Showing old and new side by side. Click for one column."));
+    const bool automatic = inl && !m_prefInline;
+    // An icon for the view being shown; in the accent colour when the narrow
+    // fallback chose it rather than you.
+    m_modeBtn->setText(inl ? QStringLiteral("☰") : QStringLiteral("◫"));
+    m_modeBtn->setStyleSheet(automatic ? QStringLiteral("QToolButton { color: %1; }")
+                                             .arg(Theme::instance().colors().accent.name())
+                                       : QString());
+    m_modeBtn->setToolTip(automatic ? tr("Inline, because the pane is too narrow for two sides (read-only).\n"
+                                         "Click for side by side anyway.")
+                          : inl     ? tr("Inline (read-only). Click for side by side.")
+                                    : tr("Side by side. Click for inline."));
     if (!showingRows() || (m_stack->currentIndex() == 2) == inl)
         return;
     const int topLine = activeScrollBar()->value();
