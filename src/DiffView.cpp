@@ -337,6 +337,8 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
         l->setSpacing(0);
         caption->setObjectName(QStringLiteral("muted"));
         caption->setContentsMargins(10, 4, 10, 4);
+        // A long caption is clipped rather than widening its pane.
+        caption->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         caption->hide();
         l->addWidget(caption);
         l->addWidget(pane, 1);
@@ -347,6 +349,10 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     auto *split = new QSplitter(Qt::Horizontal);
     split->addWidget(wrap(m_leftCaption, m_left));
     split->addWidget(wrap(m_rightCaption, m_right));
+    // The two sides start level and stay level as the window resizes (until
+    // the divider is dragged).
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 1);
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
 
@@ -876,6 +882,8 @@ void DiffView::setPaneCaptions(const QString &left, const QString &right)
 {
     m_leftCaption->setText(left);
     m_rightCaption->setText(right);
+    m_leftCaption->setToolTip(left);
+    m_rightCaption->setToolTip(right);
     m_leftCaption->setVisible(!left.isEmpty());
     m_rightCaption->setVisible(!right.isEmpty());
 }
