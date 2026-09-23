@@ -3,7 +3,10 @@
 #include "DiffView.h"
 #include "GitRepo.h"
 
+#include <QTemporaryDir>
 #include <QWidget>
+
+#include <memory>
 
 class MessageEdit;
 class QCheckBox;
@@ -27,8 +30,10 @@ private:
     void refresh();
     void showCurrentDiff();
     bool canEditInDiff(const FileEntry &e) const;
-    void takeFromLeft(DiffView::Take how, const QStringList &lines);
-    void undoDiffEdit();
+    QByteArray rediffEdited(const QStringList &lines);
+    bool writeEdited(const QStringList &lines);
+    void saveEdited();
+    bool resolveUnsavedEdits(bool allowCancel = true);
     void onAmendToggled(bool on);
     bool prepareBranch();
     void updateCounts();
@@ -66,8 +71,13 @@ private:
     QPushButton *m_commitBtn;
     DiffView *m_diff;
 
-    // Previous contents of files rewritten from the diff view, newest last.
-    QVector<QPair<QString, QByteArray>> m_undo;
+    // The file open in the diff view: its path, its bytes as loaded (to spot
+    // outside changes before saving) and HEAD's copy (to re-diff edits against).
+    QString m_diffPath;
+    QByteArray m_diffLoaded;
+    QByteArray m_diffHead;
+    bool m_diffCr = false;   // git's own diff saw CRLF on the file's side
+    std::unique_ptr<QTemporaryDir> m_tmp;
 
     QString m_lastMessage;
     bool m_updatingChecks = false;

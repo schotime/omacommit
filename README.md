@@ -67,6 +67,8 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 | Alt+Down / Alt+Up | Next / previous change in the diff |
 | Space | Toggle the selected file |
 | Ctrl+F | Filter files |
+| Ctrl+S | Save edits made in the diff |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo edits in the diff |
 | F5 | Refresh |
 | Esc | Close (the message is kept as a draft) |
 
@@ -76,13 +78,16 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   so anything else you had staged stays staged but is left out, as in TortoiseGit.
   Untracked files start unchecked; checking one adds it.
 - **The diff is working tree vs HEAD**, i.e. what the commit will contain.
-- **Right-click the diff to take from the left** (HEAD) into the file on disk, as in
+- **The right side of the diff is editable**, and nothing is written until you
+  save. Type into it directly, or right-click to take from the left (HEAD) as in
   TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from
-  left before right*, or *Use left whole file*. The file is rewritten immediately,
-  keeping its line endings; *Undo last change* in the same menu puts it back, even
-  if the edit left the file clean and it dropped out of the list. Available for
-  plain modifications of UTF-8 files; if the file changed on disk since the diff
-  was shown, the edit is refused and the diff reloaded.
+  left before right*, or *Use left whole file*. The diff re-computes as you go.
+  Unsaved edits mark the file `●` and show a **Save** button (Ctrl+S); Ctrl+Z /
+  Ctrl+Shift+Z undo and redo. Switching files, committing or closing with unsaved
+  edits asks whether to save them — a commit takes files from disk, so unsaved
+  edits would otherwise be left out. Saving keeps the file's line endings, and if
+  the file changed on disk since it was opened, asks before overwriting. Editing
+  is offered for plain modifications of UTF-8 files; others stay read-only.
 - **It uses the real `git` binary**, so hooks, GPG/SSH signing and credential
   helpers work as they do in your terminal. Commit and push run in the
   background, so slow pre-commit hooks don't freeze the window.

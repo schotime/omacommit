@@ -59,6 +59,7 @@ public:
                                 const QStringList &exclude) const;
     void refreshIndexAfterAmend(const QStringList &paths) const;
     QByteArray diff(const FileEntry &f) const;
+    QByteArray diffFiles(const QString &a, const QString &b) const;
     QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 
 private:

@@ -262,6 +262,15 @@ void GitRepo::refreshIndexAfterAmend(const QStringList &paths) const
     run(args);
 }
 
+// Two arbitrary files, with the same options as diff() so the rows line up
+// the same way. Exits 1 when they differ; that's expected.
+QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
+{
+    return run({QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--no-color"),
+                QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), QStringLiteral("--histogram"),
+                QStringLiteral("-U1000000"), QStringLiteral("--"), a, b}).out;
+}
+
 QByteArray GitRepo::diff(const FileEntry &f) const
 {
     // Full-file context so the side-by-side view shows the whole file.

@@ -1,7 +1,9 @@
 #include "DiffView.h"
 #include "Theme.h"
 
+#include <QEvent>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QPainter>
@@ -151,6 +153,12 @@ void DiffPane::setLines(const QVector<Line> &lines)
     for (const Line &l : lines)
         text << l.text;
     setPlainText(text.join(u'\n'));
+    // Filler rows only exist to keep the panes aligned. Tagging them lets an
+    // edited right pane be read back as the file: an untouched, still-empty
+    // filler is not a line.
+    int i = 0;
+    for (QTextBlock b = document()->begin(); b.isValid() && i < lines.size(); b = b.next(), ++i)
+        b.setUserState(lines.at(i).kind == Empty ? FillerState : -1);
     updateGutterWidth();
     viewport()->update();
 }
@@ -283,9 +291,25 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_next->setToolTip(tr("Next change (Alt+Down)"));
     m_next->setShortcut(QKeySequence(QStringLiteral("Alt+Down")));
 
+    m_save = new QToolButton;
+    m_save->setText(tr("Save"));
+    m_save->setToolTip(tr("Write the edited file to disk (Ctrl+S)"));
+    m_save->hide();
+
     m_left = new DiffPane;
     m_right = new DiffPane;
     m_left->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // one scrollbar drives both
+    // The document is rebuilt on every re-diff, which would wipe Qt's own undo
+    // history anyway; undo works on buffer snapshots instead.
+    m_right->setUndoRedoEnabled(false);
+    m_right->installEventFilter(this);
+
+    // Re-diff once typing pauses, not on every keystroke.
+    m_rediffTimer = new QTimer(this);
+    m_rediffTimer->setSingleShot(true);
+    m_rediffTimer->setInterval(300);
+    connect(m_rediffTimer, &QTimer::timeout, this, [this] { flushPending(); });
+    connect(m_right, &QPlainTextEdit::textChanged, this, [this] { onTyped(); });
 
     auto *split = new QSplitter(Qt::Horizontal);
     split->addWidget(m_left);
@@ -307,6 +331,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     head->addWidget(m_title, 1);
     head->addWidget(m_stats);
     head->addSpacing(10);
+    head->addWidget(m_save);
     head->addWidget(m_prev);
     head->addWidget(m_next);
 
@@ -324,6 +349,10 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     sync(m_left->verticalScrollBar(), m_right->verticalScrollBar());
     sync(m_left->horizontalScrollBar(), m_right->horizontalScrollBar());
 
+    connect(m_save, &QToolButton::clicked, this, [this] {
+        if (onSaveRequested)
+            onSaveRequested();
+    });
     connect(m_prev, &QToolButton::clicked, this, [this] { prevChange(); });
     connect(m_next, &QToolButton::clicked, this, [this] { nextChange(); });
 
@@ -337,48 +366,26 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     showMessage({}, tr("Select a file to see its changes"));
 }
 
-void DiffView::showDiff(const QString &title, const QByteArray &diff)
+void DiffView::showDiff(const QString &title, const QByteArray &diff, bool editable)
 {
-    // Re-showing the same file (after a refresh or a "use ..." edit) keeps the
-    // scroll position instead of jumping back to the first change.
-    const bool sameFile = m_stack->currentIndex() == 0 && title == m_title->text();
+    // Re-showing the same file (after a refresh or a save) keeps the scroll
+    // position instead of jumping back to the first change.
+    const bool sameFile = m_stack->currentIndex() == 0 && title == m_name;
     const int keepScroll = m_right->verticalScrollBar()->value();
 
     bool binary = false;
-    const QVector<Row> rows = parseUnified(diff, &binary);
-    if (binary) { showMessage(title, tr("Binary file, no text diff")); return; }
-    if (rows.isEmpty()) { showMessage(title, tr("No content changes")); return; }
-
-    QVector<DiffPane::Line> left, right;
-    left.reserve(rows.size());
-    right.reserve(rows.size());
-    m_changeStarts.clear();
-    m_removed = m_added = 0;
-    bool prevChanged = false;
-
-    for (int i = 0; i < rows.size(); ++i) {
-        const Row &r = rows.at(i);
-        DiffPane::Line a{r.l, r.ln, r.lk};
-        DiffPane::Line b{r.r, r.rn, r.rk};
-        if (r.lk == DiffPane::Removed && r.rk == DiffPane::Added)
-            inlineRange(r.l, r.r, a.hlStart, a.hlEnd, b.hlStart, b.hlEnd);
-        if (r.lk == DiffPane::Removed) ++m_removed;
-        if (r.rk == DiffPane::Added) ++m_added;
-        const bool changed = r.lk != DiffPane::Same || r.rk != DiffPane::Same;
-        if (changed && !prevChanged)
-            m_changeStarts << i;
-        prevChanged = changed;
-        left << a;
-        right << b;
+    if (!rowsFromDiff(diff, {}, &binary)) {
+        showMessage(title, binary ? tr("Binary file, no text diff") : tr("No content changes"));
+        return;
     }
-
-    m_title->setText(title);
-    m_l = left;
-    m_r = right;
-    m_left->setLines(left);
-    m_right->setLines(right);
+    m_name = title;
     m_stack->setCurrentIndex(0);
-    updateStats();
+    m_buffer = m_original = rightLines();
+    m_undo.clear();
+    m_redo.clear();
+    m_pending = false;
+    m_rediffTimer->stop();
+    setEditable(editable);
 
     m_current = -1;
     updateNav();
@@ -392,18 +399,85 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff)
 
 void DiffView::showMessage(const QString &title, const QString &message)
 {
-    m_title->setText(title);
+    m_name = title;
     m_stats->clear();
     m_message->setText(message);
     m_l.clear();
     m_r.clear();
+    m_buffer.clear();
+    m_original.clear();
+    m_undo.clear();
+    m_redo.clear();
+    m_pending = false;
+    m_rediffTimer->stop();
+    m_rendering = true;
     m_left->setLines({});
     m_right->setLines({});
+    m_rendering = false;
     m_stack->setCurrentIndex(1);
     m_changeStarts.clear();
     m_current = -1;
     m_removed = m_added = 0;
+    setEditable(false);
     updateNav();
+}
+
+// Parses a unified diff into the panes. When the diff has no hunks -- the
+// edited text is identical to the left -- `fallback` is shown as unchanged
+// lines instead, so an edit that undoes every change still leaves the file on
+// screen. Returns false when there is nothing to show.
+bool DiffView::rowsFromDiff(const QByteArray &diff, const QStringList &fallback, bool *binary)
+{
+    QVector<Row> rows = parseUnified(diff, binary);
+    if (*binary)
+        return false;
+    if (rows.isEmpty()) {
+        if (fallback.isEmpty())
+            return false;
+        for (int i = 0; i < fallback.size(); ++i) {
+            Row r;
+            r.l = r.r = fallback.at(i);
+            r.ln = r.rn = i + 1;
+            rows << r;
+        }
+    }
+
+    QVector<DiffPane::Line> left, right;
+    left.reserve(rows.size());
+    right.reserve(rows.size());
+    for (const Row &r : rows) {
+        DiffPane::Line a{r.l, r.ln, r.lk};
+        DiffPane::Line b{r.r, r.rn, r.rk};
+        if (r.lk == DiffPane::Removed && r.rk == DiffPane::Added)
+            inlineRange(r.l, r.r, a.hlStart, a.hlEnd, b.hlStart, b.hlEnd);
+        left << a;
+        right << b;
+    }
+    setRows(left, right);
+    return true;
+}
+
+void DiffView::setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPane::Line> &right)
+{
+    m_l = left;
+    m_r = right;
+    m_changeStarts.clear();
+    m_removed = m_added = 0;
+    bool prevChanged = false;
+    for (int i = 0; i < m_l.size(); ++i) {
+        if (m_l.at(i).kind == DiffPane::Removed) ++m_removed;
+        if (m_r.at(i).kind == DiffPane::Added) ++m_added;
+        const bool changed = isChanged(i);
+        if (changed && !prevChanged)
+            m_changeStarts << i;
+        prevChanged = changed;
+    }
+    m_rendering = true;
+    m_left->setLines(m_l);
+    m_right->setLines(m_r);
+    m_rendering = false;
+    updateStats();
+    updateHeader();
 }
 
 void DiffView::applyTheme()
@@ -469,17 +543,181 @@ void DiffView::updateNav()
     m_next->setEnabled(!m_changeStarts.isEmpty() && m_current < int(m_changeStarts.size()) - 1);
 }
 
-// ---------------------------------------------------------------- taking from the left
+// ---------------------------------------------------------------- editing the right side
 
-void DiffView::setEditable(bool editable, bool canUndo)
+void DiffView::setEditable(bool editable)
 {
-    m_editable = editable;
-    m_canUndo = canUndo;
+    m_editable = editable && m_stack->currentIndex() == 0;
+    m_right->setReadOnly(!m_editable);
+    updateHeader();
+}
+
+bool DiffView::isDirty() const
+{
+    return m_pending || m_buffer != m_original;
+}
+
+void DiffView::updateHeader()
+{
+    const bool dirty = isDirty();
+    m_title->setText(dirty ? QStringLiteral("● ") + m_name : m_name);
+    m_save->setVisible(dirty);
 }
 
 bool DiffView::isChanged(int row) const
 {
     return m_l.at(row).kind != DiffPane::Same || m_r.at(row).kind != DiffPane::Same;
+}
+
+// The right pane read back as the file: every line except fillers nobody
+// typed into.
+QStringList DiffView::editorLines() const
+{
+    QStringList out;
+    for (QTextBlock b = m_right->document()->begin(); b.isValid(); b = b.next()) {
+        if (b.userState() == DiffPane::FillerState && b.text().isEmpty())
+            continue;
+        out << b.text();
+    }
+    return out;
+}
+
+void DiffView::onTyped()
+{
+    if (m_rendering || !m_editable)
+        return;
+    if (!m_pending) {
+        // First keystroke of a burst: the whole burst is one undo step.
+        m_undo << m_buffer;
+        m_redo.clear();
+        m_pending = true;
+    }
+    updateHeader();
+    m_rediffTimer->start();
+}
+
+void DiffView::flushPending()
+{
+    m_rediffTimer->stop();
+    if (!m_pending)
+        return;
+    m_pending = false;
+    const QStringList typed = editorLines();
+    if (typed == m_buffer) {
+        m_undo.removeLast();   // typed and deleted again: not a step
+        updateHeader();
+        return;
+    }
+    applyBuffer(typed);
+}
+
+// Re-diffs `buffer` against the left side and redraws, keeping the caret on
+// the same line of the file and the view where it was.
+void DiffView::applyBuffer(const QStringList &buffer)
+{
+    const QTextCursor cur = m_right->textCursor();
+    const QTextBlock curBlock = cur.block();
+    const bool onFiller = curBlock.userState() == DiffPane::FillerState && curBlock.text().isEmpty();
+    int fileLine = 0;
+    for (QTextBlock b = m_right->document()->begin(); b.isValid() && b != curBlock; b = b.next())
+        if (!(b.userState() == DiffPane::FillerState && b.text().isEmpty()))
+            ++fileLine;
+    const int column = onFiller ? 0 : cur.positionInBlock();
+    const int scroll = m_right->verticalScrollBar()->value();
+
+    m_buffer = buffer;
+    bool binary = false;
+    rowsFromDiff(rediff ? rediff(buffer) : QByteArray(), buffer, &binary);
+
+    int row = -1, seen = 0;
+    for (int i = 0; i < m_r.size() && row < 0; ++i)
+        if (m_r.at(i).kind != DiffPane::Empty && seen++ == fileLine)
+            row = i;
+    if (row < 0)
+        row = int(m_r.size()) - 1;
+    if (row >= 0) {
+        const QTextBlock b = m_right->document()->findBlockByNumber(row);
+        QTextCursor c(b);
+        c.movePosition(QTextCursor::Right, QTextCursor::MoveAnchor, qMin(column, b.length() - 1));
+        m_rendering = true;
+        m_right->setTextCursor(c);
+        m_rendering = false;
+    }
+    m_right->verticalScrollBar()->setValue(scroll);
+    m_current = -1;
+    updateNav();
+    updateHeader();
+}
+
+void DiffView::take(Take how, int row)
+{
+    if (!m_editable)
+        return;
+    flushPending();
+    QStringList next;
+    if (how == Take::WholeFile) {
+        for (const DiffPane::Line &l : m_l)
+            if (l.kind != DiffPane::Empty)
+                next << l.text;
+    } else {
+        next = resultOf(how, row);
+    }
+    if (next == m_buffer)
+        return;
+    m_undo << m_buffer;
+    m_redo.clear();
+    applyBuffer(next);
+}
+
+void DiffView::undo()
+{
+    flushPending();
+    if (m_undo.isEmpty())
+        return;
+    m_redo << m_buffer;
+    applyBuffer(m_undo.takeLast());
+}
+
+void DiffView::redo()
+{
+    flushPending();
+    if (m_redo.isEmpty())
+        return;
+    m_undo << m_buffer;
+    applyBuffer(m_redo.takeLast());
+}
+
+bool DiffView::save()
+{
+    flushPending();
+    if (!isDirty())
+        return true;
+    if (!onSave || !onSave(m_buffer))
+        return false;
+    m_original = m_buffer;
+    updateHeader();
+    return true;
+}
+
+void DiffView::discard()
+{
+    m_rediffTimer->stop();
+    m_pending = false;
+    m_buffer = m_original;
+    m_undo.clear();
+    m_redo.clear();
+    updateHeader();
+}
+
+bool DiffView::eventFilter(QObject *watched, QEvent *event)
+{
+    // The editor would otherwise take these for its own (disabled) undo.
+    if (watched == m_right && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Undo)) { undo(); return true; }
+        if (ke->matches(QKeySequence::Redo)) { redo(); return true; }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // The right side's lines after taking `how` at `row`. The panes hold the whole
@@ -551,35 +789,39 @@ QByteArray DiffView::compose(const QStringList &lines, const QByteArray &origina
 
 void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
 {
+    // Settle any typing first, so the row under the pointer means what it shows.
+    flushPending();
+
     QMenu *menu = pane->createStandardContextMenu(pos);
+    // Qt's own undo/redo entries drive the editor's history, which is off here.
+    for (QAction *a : menu->actions())
+        if (a->objectName() == u"edit-undo" || a->objectName() == u"edit-redo")
+            menu->removeAction(a);
     QAction *before = menu->actions().isEmpty() ? nullptr : menu->actions().constFirst();
 
     const bool showing = m_stack->currentIndex() == 0;
     const int row = pane->cursorForPosition(pos).blockNumber();
     const bool onChange = showing && row >= 0 && row < m_l.size() && isChanged(row);
 
-    auto add = [&](const QString &text, Take how, bool enabled) {
+    auto add = [&](const QString &text, bool enabled, auto fn) {
         auto *a = new QAction(text, menu);
-        a->setEnabled(m_editable && enabled);
-        connect(a, &QAction::triggered, this, [this, how, row] {
-            if (onTake)
-                onTake(how, resultOf(how, row));
-        });
+        a->setEnabled(enabled);
+        connect(a, &QAction::triggered, this, fn);
         menu->insertAction(before, a);
+        return a;
     };
-    add(tr("Use left text block"), Take::Block, onChange);
-    add(tr("Use left line"), Take::Line, onChange);
-    add(tr("Use text block from left before right"), Take::LeftBeforeRight, onChange);
-    add(tr("Use left whole file"), Take::WholeFile, showing);
-
-    auto *undo = new QAction(tr("Undo last change"), menu);
-    undo->setEnabled(m_canUndo);
-    connect(undo, &QAction::triggered, this, [this] {
-        if (onUndo)
-            onUndo();
-    });
+    add(tr("Use left text block"), m_editable && onChange, [this, row] { take(Take::Block, row); });
+    add(tr("Use left line"), m_editable && onChange, [this, row] { take(Take::Line, row); });
+    add(tr("Use text block from left before right"), m_editable && onChange,
+        [this, row] { take(Take::LeftBeforeRight, row); });
+    add(tr("Use left whole file"), m_editable && showing, [this] { take(Take::WholeFile, 0); });
     menu->insertSeparator(before);
-    menu->insertAction(before, undo);
+    add(tr("Undo"), !m_undo.isEmpty(), [this] { undo(); })->setShortcut(QKeySequence::Undo);
+    add(tr("Redo"), !m_redo.isEmpty(), [this] { redo(); })->setShortcut(QKeySequence::Redo);
+    add(tr("Save"), isDirty(), [this] {
+        if (onSaveRequested)
+            onSaveRequested();
+    })->setShortcut(QKeySequence::Save);
     if (before)
         menu->insertSeparator(before);
 

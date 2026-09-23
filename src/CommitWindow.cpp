@@ -96,8 +96,9 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_commitBtn->setToolTip(tr("Ctrl+Enter"));
 
     m_diff = new DiffView;
-    m_diff->onTake = [this](DiffView::Take how, const QStringList &lines) { takeFromLeft(how, lines); };
-    m_diff->onUndo = [this] { undoDiffEdit(); };
+    m_diff->rediff = [this](const QStringList &lines) { return rediffEdited(lines); };
+    m_diff->onSave = [this](const QStringList &lines) { return writeEdited(lines); };
+    m_diff->onSaveRequested = [this] { saveEdited(); };
 
     // --- layout
     auto *left = new QWidget;
@@ -176,6 +177,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Enter")), this, [this] { commit(false); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Return")), this, [this] { commit(true); });
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { refresh(); });
+    new QShortcut(QKeySequence::Save, this, [this] { saveEdited(); });
     new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { close(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+F")), this, [this] {
         m_filter->setFocus();
@@ -278,18 +280,71 @@ void CommitWindow::refresh()
 void CommitWindow::showCurrentDiff()
 {
     auto *it = m_files->currentItem();
+    const QString path = it ? m_entries.at(it->data(0, IndexRole).toInt()).path : QString();
+
+    if (m_diff->isDirty()) {
+        if (path == m_diffPath)
+            return;   // a refresh re-selected the file being edited: keep the edits
+        // Moving to another file. If the edited one is still listed, Cancel
+        // can go back to it; if it has dropped out, only Save or Discard can.
+        QTreeWidgetItem *editedItem = nullptr;
+        for (int i = 0; i < m_files->topLevelItemCount() && !editedItem; ++i)
+            if (m_entries.at(m_files->topLevelItem(i)->data(0, IndexRole).toInt()).path == m_diffPath)
+                editedItem = m_files->topLevelItem(i);
+        if (!resolveUnsavedEdits(editedItem != nullptr)) {
+            QSignalBlocker block(m_files);
+            m_files->setCurrentItem(editedItem);
+            return;
+        }
+    }
+
+    m_diffPath = path;
+    m_diffLoaded.clear();
+    m_diffHead.clear();
     if (!it) {
         m_diff->showMessage({}, tr("Select a file to see its changes"));
         return;
     }
     const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
-    m_diff->showDiff(it->text(0), m_repo.diff(e));
-    m_diff->setEditable(canEditInDiff(e), !m_undo.isEmpty());
+    bool editable = canEditInDiff(e);
+    if (editable) {
+        QFile f(QDir(m_repo.root()).filePath(e.path));
+        editable = f.open(QIODevice::ReadOnly);
+        if (editable)
+            m_diffLoaded = f.readAll();
+        // Lines are written back as UTF-8, which would mangle anything else.
+        QStringDecoder utf8(QStringDecoder::Utf8);
+        [[maybe_unused]] const QString decoded = utf8(m_diffLoaded);   // decoding is what sets hasError()
+        if (utf8.hasError() || m_diffLoaded.startsWith("\xEF\xBB\xBF"))
+            editable = false;
+    }
+    if (editable) {
+        const GitResult head = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
+                                           QStringLiteral("HEAD:") + e.path});
+        editable = head.ok();
+        m_diffHead = head.out;
+    }
+    const QByteArray diff = m_repo.diff(e);
+    // Whether git's diff kept the CRs (it drops them when core.autocrlf
+    // normalises the file). Re-diffs of edits must see the file the same way,
+    // or one keystroke would turn every line of a CRLF file into a change.
+    m_diffCr = false;
+    for (const QByteArray &line : diff.split('\n'))
+        if ((line.startsWith('+') || line.startsWith(' ')) && !line.startsWith("+++") && line.endsWith('\r')) {
+            m_diffCr = true;
+            break;
+        }
+    m_diff->showDiff(it->text(0), diff, editable);
+    // Git may show the file through filters (autocrlf, textconv, ...). If what
+    // the pane shows is not what is on disk, saving it would rewrite the file
+    // as something else, so leave it read-only.
+    if (editable && m_diff->rightLines() != DiffView::linesOf(m_diffLoaded))
+        m_diff->setEditable(false);
 }
 
 // Only plain modifications: for new, deleted, renamed or conflicted files the
 // left side is missing or is not "the same file before", and for a file that
-// is only in the commit being amended there is nothing on disk to rewrite.
+// is only in the commit being amended there is nothing on disk to edit.
 bool CommitWindow::canEditInDiff(const FileEntry &e) const
 {
     auto plain = [](QChar c) { return c == u' ' || c == u'M'; };
@@ -298,93 +353,97 @@ bool CommitWindow::canEditInDiff(const FileEntry &e) const
     return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
 }
 
-namespace {
-bool writeWhole(const QString &file, const QByteArray &data, QString *error)
+// The edited buffer against HEAD's copy, through the same git diff as
+// everything else so the alignment matches.
+QByteArray CommitWindow::rediffEdited(const QStringList &lines)
 {
+    if (!m_tmp)
+        m_tmp = std::make_unique<QTemporaryDir>();
+    const QString head = m_tmp->filePath(QStringLiteral("head"));
+    const QString edited = m_tmp->filePath(QStringLiteral("edited"));
+    QFile a(head), b(edited);
+    if (!a.open(QIODevice::WriteOnly | QIODevice::Truncate) || !b.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return {};
+    const QString eol = m_diffCr ? QStringLiteral("\r\n") : QStringLiteral("\n");
+    QByteArray text = lines.join(eol).toUtf8();
+    if (!lines.isEmpty() && m_diffLoaded.endsWith('\n'))
+        text += eol.toUtf8();
+    a.write(m_diffHead);
+    b.write(text);
+    a.close();
+    b.close();
+    return m_repo.diffFiles(head, edited);
+}
+
+bool CommitWindow::writeEdited(const QStringList &lines)
+{
+    const QString file = QDir(m_repo.root()).filePath(m_diffPath);
+    QFile in(file);
+    const QByteArray onDisk = in.open(QIODevice::ReadOnly) ? in.readAll() : QByteArray();
+    in.close();
+    if (onDisk != m_diffLoaded) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(tr("%1 changed on disk").arg(m_diffPath));
+        box.setText(tr("%1 has changed on disk since it was opened here.").arg(m_diffPath));
+        box.setInformativeText(tr("Saving will overwrite that change with your edits."));
+        box.setStandardButtons(QMessageBox::Save | QMessageBox::Cancel);
+        box.button(QMessageBox::Save)->setText(tr("Overwrite"));
+        box.setDefaultButton(QMessageBox::Cancel);
+        if (box.exec() != QMessageBox::Save)
+            return false;
+    }
+
+    const QByteArray data = DiffView::compose(lines, m_diffLoaded);
     // Truncate in place rather than replace, so permissions and symlinks survive.
-    QFile f(file);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(data) != data.size()) {
-        *error = f.errorString();
+    QFile out(file);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) || out.write(data) != data.size()) {
+        showError(tr("Could not save %1").arg(m_diffPath), out.errorString());
         return false;
     }
+    m_diffLoaded = data;
+    m_status->setText(tr("Saved %1").arg(m_diffPath));
     return true;
 }
-} // namespace
 
-void CommitWindow::takeFromLeft(DiffView::Take how, const QStringList &lines)
+void CommitWindow::saveEdited()
 {
-    auto *it = m_files->currentItem();
-    if (!it || m_busy)
-        return;
-    const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
-    if (!canEditInDiff(e))
-        return;
-
-    const QString file = QDir(m_repo.root()).filePath(e.path);
-    QFile in(file);
-    if (!in.open(QIODevice::ReadOnly)) {
-        showError(tr("Could not read %1").arg(e.path), in.errorString());
-        return;
-    }
-    const QByteArray before = in.readAll();
-    in.close();
-
-    // Lines are written back as UTF-8, which would mangle anything else.
-    QStringDecoder utf8(QStringDecoder::Utf8);
-    [[maybe_unused]] const QString decoded = utf8(before);   // decoding is what sets hasError()
-    if (utf8.hasError() || before.startsWith("\xEF\xBB\xBF")) {
-        showError(tr("Cannot edit %1 here").arg(e.path),
-                  tr("Only UTF-8 files without a byte-order mark can be edited from the diff."));
-        return;
-    }
-    // The panes show the file as it was when it was selected. If it has changed
-    // since, lines derived from them would overwrite that change.
-    if (DiffView::linesOf(before) != m_diff->rightLines()) {
-        refresh();
-        showError(tr("%1 changed on disk").arg(e.path), tr("The diff has been reloaded; try again."));
-        return;
-    }
-
-    if (how == DiffView::Take::WholeFile) {
-        // Exact bytes from HEAD, including its line endings and final newline.
-        const GitResult r = m_repo.run({QStringLiteral("restore"), QStringLiteral("--source=HEAD"),
-                                        QStringLiteral("--worktree"), QStringLiteral("--"), e.path});
-        if (!r.ok()) {
-            showError(tr("Could not restore %1").arg(e.path), QString::fromUtf8(r.err));
-            return;
-        }
-    } else {
-        QString error;
-        if (!writeWhole(file, DiffView::compose(lines, before), &error)) {
-            showError(tr("Could not write %1").arg(e.path), error);
-            return;
-        }
-    }
-    m_undo.push_back({e.path, before});
-    m_status->setText(tr("Updated %1").arg(e.path));
-    refresh();
+    if (m_diff->isDirty() && m_diff->save())
+        refresh();   // the file's status may have changed, or it may now be clean
 }
 
-void CommitWindow::undoDiffEdit()
+// Asks what to do with unsaved diff edits. Returns false when the caller
+// should not go ahead.
+bool CommitWindow::resolveUnsavedEdits(bool allowCancel)
 {
-    if (m_undo.isEmpty() || m_busy)
-        return;
-    const auto [path, bytes] = m_undo.takeLast();
-    QString error;
-    if (!writeWhole(QDir(m_repo.root()).filePath(path), bytes, &error)) {
-        m_undo.push_back({path, bytes});
-        showError(tr("Could not restore %1").arg(path), error);
-        return;
-    }
-    m_status->setText(tr("Restored %1").arg(path));
-    refresh();
-    // A file that the edit made clean dropped out of the list; bring it back into view.
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *item = m_files->topLevelItem(i);
-        if (m_entries.at(item->data(0, IndexRole).toInt()).path == path) {
-            m_files->setCurrentItem(item);
-            break;
+    if (!m_diff->isDirty())
+        return true;
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("Unsaved changes"));
+    box.setText(tr("Save your edits to %1?").arg(m_diffPath));
+    auto buttons = QMessageBox::Save | QMessageBox::Discard;
+    if (allowCancel)
+        buttons |= QMessageBox::Cancel;
+    box.setStandardButtons(buttons);
+    // The platform theme may call it "Close without Saving", which is wrong
+    // when this is asked on the way to another file or a commit.
+    box.button(QMessageBox::Discard)->setText(tr("Discard"));
+    box.setDefaultButton(QMessageBox::Save);
+    for (;;) {
+        const int choice = box.exec();
+        if (choice == QMessageBox::Discard) {
+            m_diff->discard();
+            return true;
         }
+        if (choice == QMessageBox::Save) {
+            if (m_diff->save())
+                return true;
+            if (allowCancel)
+                return false;
+            continue;   // could not save and cannot stay: ask again rather than lose them
+        }
+        return false;
     }
 }
 
@@ -530,6 +589,12 @@ void CommitWindow::commit(bool push)
 {
     if (m_busy || !m_commitBtn->isEnabled())
         return;
+    // The commit takes files from disk, so unsaved diff edits would be left out.
+    if (m_diff->isDirty()) {
+        if (!resolveUnsavedEdits())
+            return;
+        refresh();
+    }
 
     const QString msg = m_message->toPlainText().trimmed();
     const bool amend = m_amend->isChecked();
@@ -760,7 +825,7 @@ void CommitWindow::saveToHistory(const QString &message)
 
 void CommitWindow::closeEvent(QCloseEvent *e)
 {
-    if (m_busy) {   // don't abandon a running commit/push
+    if (m_busy || !resolveUnsavedEdits()) {   // don't abandon a running commit/push, or unsaved edits
         e->ignore();
         return;
     }
