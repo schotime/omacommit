@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHash>
 #include <QMessageBox>
 
 #include <cstdio>
@@ -25,13 +26,13 @@ void printUsage()
     std::printf("og — Omarchy Git\n"
                 "\n"
                 "Usage:\n"
-                "  og [commit] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
-                "  og log [path]        History: commit graph, changed files and their diffs\n"
-                "  og resolve [path]    Resolve merge conflicts (path may name a conflicted file)\n"
+                "  og [commit|c] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
+                "  og log|l [path]        History: commit graph, changed files and their diffs\n"
+                "  og resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
                 "\n"
                 "Options:\n"
-                "  -h, --help           Show this help\n"
-                "  -V, --version        Show the version\n");
+                "  -h, --help             Show this help\n"
+                "  -V, --version          Show the version\n");
 }
 
 // Startup failures reach the user differently depending on how og was launched:
@@ -77,11 +78,14 @@ int main(int argc, char *argv[])
     // A leading subcommand is optional; anything else is taken as a path.
     QString command = QStringLiteral("commit");
     if (!args.isEmpty()) {
-        static const QStringList known{QStringLiteral("commit"), QStringLiteral("log"),
-                                       QStringLiteral("resolve")};
-        if (known.contains(args.first())) {
-            command = args.takeFirst();
-        }
+        // Each subcommand, and its one-letter alias.
+        static const QHash<QString, QString> known{
+            {QStringLiteral("commit"), QStringLiteral("commit")},   {QStringLiteral("c"), QStringLiteral("commit")},
+            {QStringLiteral("log"), QStringLiteral("log")},         {QStringLiteral("l"), QStringLiteral("log")},
+            {QStringLiteral("resolve"), QStringLiteral("resolve")}, {QStringLiteral("r"), QStringLiteral("resolve")},
+        };
+        if (known.contains(args.first()))
+            command = known.value(args.takeFirst());
     }
     Theme::instance().load();
     Theme::instance().apply();

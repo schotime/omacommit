@@ -40,11 +40,13 @@ og commit ~/code/app  # a specific repo
 
 Launched from a menu with no repo, it asks you to pick one.
 
-| Subcommand | Status |
-| --- | --- |
-| `og commit` | Working — the dialog below. Also the default when none is given. |
-| `og log` | Working — history browser, see below. |
-| `og resolve` | Working — conflict resolution, see below. |
+| Subcommand | Alias | What it opens |
+| --- | --- | --- |
+| `og commit` | `og c` | The commit dialog below. Also the default when none is given. |
+| `og log` | `og l` | The history browser, see below. |
+| `og resolve` | `og r` | Conflict resolution, see below. |
+
+A directory literally named `c`, `l` or `r` needs a path prefix (`og ./l`).
 
 `og --help` lists these; `og --version` prints the version.
 
