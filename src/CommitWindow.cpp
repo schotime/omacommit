@@ -20,6 +20,7 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
@@ -144,14 +145,14 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     actions->addWidget(m_commitBtn);
     l->addLayout(actions);
 
-    auto *split = new QSplitter(Qt::Horizontal);
+    auto *split = m_split = new QSplitter(Qt::Horizontal);
     split->addWidget(left);
     split->addWidget(m_diff);
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
     split->setStretchFactor(0, 2);
     split->setStretchFactor(1, 3);
-    split->setSizes({520, 880});
+    split->setSizes({520, 880});   // provisional; showEvent sizes it for the message
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -946,6 +947,24 @@ void CommitWindow::saveToHistory(const QString &message)
     while (history.size() > MaxHistory)
         history.removeLast();
     s.setValue(QStringLiteral("history"), history);
+}
+
+// The left side is made wide enough for a 72-column message -- the guide the
+// message box draws -- but kept between 30% and 45% of the window, so the diff
+// always keeps most of it. Worked out once, when the font and width are known.
+void CommitWindow::showEvent(QShowEvent *e)
+{
+    QWidget::showEvent(e);
+    if (m_sized)
+        return;
+    m_sized = true;
+    m_message->ensurePolished();
+    const int total = m_split->width();
+    const int text = m_message->fontMetrics().horizontalAdvance(QString(72, QLatin1Char('m')));
+    const int want = text + 2 * int(m_message->document()->documentMargin()) + 2 * m_message->frameWidth()
+                   + m_message->verticalScrollBar()->sizeHint().width() + 28;   // + the panel's margins
+    const int left = qBound(int(total * 0.30), want, int(total * 0.45));
+    m_split->setSizes({left, total - left});
 }
 
 void CommitWindow::closeEvent(QCloseEvent *e)

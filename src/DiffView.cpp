@@ -7,8 +7,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTextBlock>
@@ -184,9 +186,17 @@ int DiffPane::gutterWidth() const
 {
     int maxNo = 1;
     for (const Line &l : m_lines)
-        maxNo = qMax(maxNo, l.number);
+        maxNo = qMax(maxNo, qMax(l.number, l.number2));
     const int digits = qMax(3, int(QString::number(maxNo).size()));
-    return fontMetrics().horizontalAdvance(u'9') * digits + 18;
+    const int column = fontMetrics().horizontalAdvance(u'9') * digits;
+    return m_dual ? column * 2 + 26 : column + 18;
+}
+
+void DiffPane::setDualNumbers(bool dual)
+{
+    m_dual = dual;
+    updateGutterWidth();
+    m_gutter->update();
 }
 
 void DiffPane::updateGutterWidth()
@@ -279,8 +289,16 @@ void DiffPane::paintGutter(QPaintEvent *e)
             p.fillRect(row, m_c.theirs);
         else if (ln.kind == Marker)
             p.fillRect(row, m_c.marker);
-        if (ln.number > 0) {
-            p.setPen(ln.kind == Same ? m_c.gutterFg : m_c.fg);
+        p.setPen(ln.kind == Same ? m_c.gutterFg : m_c.fg);
+        if (m_dual) {   // old | new
+            const qreal half = (w - 10) / 2.0;
+            if (ln.number > 0)
+                p.drawText(QRectF(0, r.top(), half - 4, r.height()), Qt::AlignRight | Qt::AlignVCenter,
+                           QString::number(ln.number));
+            if (ln.number2 > 0)
+                p.drawText(QRectF(half, r.top(), half, r.height()), Qt::AlignRight | Qt::AlignVCenter,
+                           QString::number(ln.number2));
+        } else if (ln.number > 0) {
             p.drawText(QRectF(0, r.top(), w - 10, r.height()), Qt::AlignRight | Qt::AlignVCenter,
                        QString::number(ln.number));
         }
@@ -308,6 +326,9 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_next->setText(QStringLiteral("↓"));
     m_next->setToolTip(tr("Next change (Alt+Down)"));
     m_next->setShortcut(QKeySequence(QStringLiteral("Alt+Down")));
+
+    m_modeBtn = new QToolButton;
+    m_prefInline = QSettings().value(QStringLiteral("diff/inline"), false).toBool();
 
     m_save = new QToolButton;
     m_save->setText(tr("Save"));
@@ -361,9 +382,27 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_message->setAlignment(Qt::AlignCenter);
     m_message->setWordWrap(true);
 
+    // One column: each block's removed lines above its added ones, like git diff.
+    // Read-only -- typing needs the two sides lined up.
+    m_inline = new DiffPane;
+    m_inline->setDualNumbers(true);
+    m_inline->installEventFilter(this);
+    m_inlineCaption = new QLabel;
+    m_inlineCaption->setObjectName(QStringLiteral("muted"));
+    m_inlineCaption->setContentsMargins(10, 4, 10, 4);
+    m_inlineCaption->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_inlineCaption->hide();
+    auto *inlinePage = new QWidget;
+    auto *il = new QVBoxLayout(inlinePage);
+    il->setContentsMargins(0, 0, 0, 0);
+    il->setSpacing(0);
+    il->addWidget(m_inlineCaption);
+    il->addWidget(m_inline, 1);
+
     m_stack = new QStackedWidget;
-    m_stack->addWidget(split);
-    m_stack->addWidget(m_message);
+    m_stack->addWidget(split);        // 0: side by side
+    m_stack->addWidget(m_message);    // 1: a message instead of a diff
+    m_stack->addWidget(inlinePage);   // 2: inline
 
     auto *head = new QHBoxLayout;
     head->setContentsMargins(10, 6, 8, 6);
@@ -371,6 +410,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     head->addWidget(m_stats);
     head->addSpacing(10);
     head->addWidget(m_save);
+    head->addWidget(m_modeBtn);
     head->addWidget(m_prev);
     head->addWidget(m_next);
 
@@ -395,7 +435,21 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     connect(m_prev, &QToolButton::clicked, this, [this] { prevChange(); });
     connect(m_next, &QToolButton::clicked, this, [this] { nextChange(); });
 
-    for (DiffPane *pane : {m_left, m_right}) {
+    // A click always flips what you see: from the automatic inline fallback it
+    // means side by side anyway (until there is room again).
+    connect(m_modeBtn, &QToolButton::clicked, this, [this] {
+        if (m_stack->currentIndex() == 2) {
+            m_prefInline = false;
+            m_forceSplit = m_narrow;
+        } else {
+            m_prefInline = true;
+            m_forceSplit = false;
+        }
+        QSettings().setValue(QStringLiteral("diff/inline"), m_prefInline);
+        updateMode();
+    });
+
+    for (DiffPane *pane : {m_left, m_right, m_inline}) {
         pane->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(pane, &QWidget::customContextMenuRequested, this,
                 [this, pane](const QPoint &pos) { showContextMenu(pane, pos); });
@@ -403,14 +457,15 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
 
     applyTheme();
     showMessage({}, tr("Select a file to see its changes"));
+    updateMode();   // label the mode button
 }
 
 void DiffView::showDiff(const QString &title, const QByteArray &diff, bool editable)
 {
     // Re-showing the same file (after a refresh or a save) keeps the scroll
     // position instead of jumping back to the first change.
-    const bool sameFile = m_stack->currentIndex() == 0 && title == m_name;
-    const int keepScroll = m_right->verticalScrollBar()->value();
+    const bool sameFile = showingRows() && title == m_name;
+    const int keepScroll = activeScrollBar()->value();
 
     bool binary = false;
     if (!rowsFromDiff(diff, {}, &binary)) {
@@ -418,7 +473,7 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
         return;
     }
     m_name = title;
-    m_stack->setCurrentIndex(0);
+    m_stack->setCurrentIndex(inlineWanted() ? 2 : 0);
     m_buffer = m_original = rightLines();
     m_undo.clear();
     m_redo.clear();
@@ -430,7 +485,7 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     updateNav();
     QTimer::singleShot(0, this, [this, sameFile, keepScroll] {   // after layout, so the viewport height is known
         if (sameFile)
-            m_right->verticalScrollBar()->setValue(keepScroll);
+            activeScrollBar()->setValue(keepScroll);
         else if (!m_changeStarts.isEmpty())
             nextChange();
     });
@@ -452,6 +507,7 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_rendering = true;
     m_left->setLines({});
     m_right->setLines({});
+    m_inline->setLines({});
     m_rendering = false;
     m_stack->setCurrentIndex(1);
     m_changeStarts.clear();
@@ -515,6 +571,7 @@ void DiffView::setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPa
     m_left->setLines(m_l);
     m_right->setLines(m_r);
     m_rendering = false;
+    buildInline();
     updateStats();
     updateHeader();
 }
@@ -539,12 +596,13 @@ void DiffView::applyTheme()
     c.empty = t.border;
     m_left->setColors(c);
     m_right->setColors(c);
+    m_inline->setColors(c);
     updateStats();
 }
 
 void DiffView::updateStats()
 {
-    if (m_stack->currentIndex() != 0) {
+    if (!showingRows()) {
         m_stats->clear();
         return;
     }
@@ -555,9 +613,12 @@ void DiffView::updateStats()
 
 void DiffView::gotoRow(int row)
 {
-    const int lineH = qMax(1, m_right->fontMetrics().lineSpacing());
-    const int visible = qMax(1, m_right->viewport()->height() / lineH);
-    m_right->verticalScrollBar()->setValue(qMax(0, row - visible / 4));
+    const bool inl = m_stack->currentIndex() == 2;
+    DiffPane *pane = inl ? m_inline : m_right;
+    const int line = inl ? m_rowToInline.value(row, 0) : row;
+    const int lineH = qMax(1, pane->fontMetrics().lineSpacing());
+    const int visible = qMax(1, pane->viewport()->height() / lineH);
+    pane->verticalScrollBar()->setValue(qMax(0, line - visible / 4));
 }
 
 void DiffView::nextChange()
@@ -588,7 +649,7 @@ void DiffView::updateNav()
 
 void DiffView::setEditable(bool editable)
 {
-    m_editable = editable && m_stack->currentIndex() == 0;
+    m_editable = editable && showingRows();
     m_right->setReadOnly(!m_editable);
     updateHeader();
 }
@@ -664,7 +725,7 @@ void DiffView::applyBuffer(const QStringList &buffer)
         if (!(b.userState() == DiffPane::FillerState && b.text().isEmpty()))
             ++fileLine;
     const int column = onFiller ? 0 : cur.positionInBlock();
-    const int scroll = m_right->verticalScrollBar()->value();
+    const int scroll = activeScrollBar()->value();
 
     m_buffer = buffer;
     bool binary = false;
@@ -684,7 +745,7 @@ void DiffView::applyBuffer(const QStringList &buffer)
         m_right->setTextCursor(c);
         m_rendering = false;
     }
-    m_right->verticalScrollBar()->setValue(scroll);
+    activeScrollBar()->setValue(scroll);
     m_current = -1;
     updateNav();
     updateHeader();
@@ -753,7 +814,7 @@ void DiffView::discard()
 bool DiffView::eventFilter(QObject *watched, QEvent *event)
 {
     // The editor would otherwise take these for its own (disabled) undo.
-    if (watched == m_right && event->type() == QEvent::KeyPress) {
+    if ((watched == m_right || watched == m_inline) && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Undo)) { undo(); return true; }
         if (ke->matches(QKeySequence::Redo)) { redo(); return true; }
@@ -840,8 +901,10 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
             menu->removeAction(a);
     QAction *before = menu->actions().isEmpty() ? nullptr : menu->actions().constFirst();
 
-    const bool showing = m_stack->currentIndex() == 0;
-    const int row = pane->cursorForPosition(pos).blockNumber();
+    const bool showing = showingRows();
+    int row = pane->cursorForPosition(pos).blockNumber();
+    if (pane == m_inline)
+        row = m_inlineToRow.value(row, -1);   // back to the aligned row it came from
     const bool onChange = showing && row >= 0 && row < m_l.size() && isChanged(row);
 
     auto add = [&](const QString &text, bool enabled, auto fn) {
@@ -880,6 +943,10 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
 
 void DiffView::setPaneCaptions(const QString &left, const QString &right)
 {
+    m_inlineCaption->setText(left.isEmpty() && right.isEmpty() ? QString()
+                             : tr("%1   →   %2").arg(left, right));
+    m_inlineCaption->setToolTip(m_inlineCaption->text());
+    m_inlineCaption->setVisible(!left.isEmpty() || !right.isEmpty());
     m_leftCaption->setText(left);
     m_rightCaption->setText(right);
     m_leftCaption->setToolTip(left);
@@ -914,4 +981,101 @@ void DiffView::revealRow(int row)
 {
     if (row >= 0)
         gotoRow(row);
+}
+
+// ---------------------------------------------------------------- side by side / inline
+
+bool DiffView::showingRows() const
+{
+    return m_stack->currentIndex() == 0 || m_stack->currentIndex() == 2;
+}
+
+bool DiffView::inlineWanted() const
+{
+    return m_prefInline || (m_narrow && !m_forceSplit);
+}
+
+QScrollBar *DiffView::activeScrollBar() const
+{
+    return (m_stack->currentIndex() == 2 ? m_inline : m_right)->verticalScrollBar();
+}
+
+// The inline view drawn from the aligned rows: unchanged lines once, each run
+// of changes as its removed lines and then its added ones. Both directions of
+// the row <-> line mapping are kept, for scrolling and the context menu.
+void DiffView::buildInline()
+{
+    QVector<DiffPane::Line> lines;
+    m_inlineToRow.clear();
+    m_rowToInline.assign(m_l.size(), 0);
+    for (int i = 0; i < m_l.size();) {
+        if (!isChanged(i)) {
+            DiffPane::Line l = m_r.at(i);
+            l.number = m_l.at(i).number;
+            l.number2 = m_r.at(i).number;
+            m_rowToInline[i] = int(lines.size());
+            lines << l;
+            m_inlineToRow << i;
+            ++i;
+            continue;
+        }
+        int end = i;
+        while (end < m_l.size() && isChanged(end))
+            ++end;
+        for (int j = i; j < end; ++j)
+            m_rowToInline[j] = int(lines.size());
+        for (int j = i; j < end; ++j)
+            if (m_l.at(j).kind != DiffPane::Empty) {
+                DiffPane::Line l = m_l.at(j);   // old number only
+                lines << l;
+                m_inlineToRow << j;
+            }
+        for (int j = i; j < end; ++j)
+            if (m_r.at(j).kind != DiffPane::Empty) {
+                DiffPane::Line l = m_r.at(j);
+                l.number2 = l.number;           // new number only
+                l.number = -1;
+                lines << l;
+                m_inlineToRow << j;
+            }
+        i = end;
+    }
+    m_inline->setLines(lines);
+}
+
+// Shows whichever view is wanted, keeping the same part of the file in view.
+void DiffView::updateMode()
+{
+    const bool inl = inlineWanted();
+    m_modeBtn->setText(inl ? (m_prefInline ? tr("Inline") : tr("Inline · narrow")) : tr("Side by side"));
+    m_modeBtn->setToolTip(inl ? (m_prefInline ? tr("Showing one column (read-only). Click for side by side.")
+                                              : tr("Too narrow for two sides, so showing one column (read-only). "
+                                                   "Click for side by side anyway."))
+                              : tr("Showing old and new side by side. Click for one column."));
+    if (!showingRows() || (m_stack->currentIndex() == 2) == inl)
+        return;
+    const int topLine = activeScrollBar()->value();
+    const int topRow = m_stack->currentIndex() == 2 ? m_inlineToRow.value(topLine, 0) : topLine;
+    m_stack->setCurrentIndex(inl ? 2 : 0);
+    activeScrollBar()->setValue(inl ? m_rowToInline.value(topRow, 0) : topRow);
+}
+
+// Narrow means fewer than ~60 characters per side. The band between 60 and
+// 64 keeps it from flickering while a divider is dragged across the line.
+void DiffView::updateNarrow()
+{
+    const int charW = qMax(1, m_right->fontMetrics().horizontalAdvance(u'm'));
+    const int side = m_stack->width() / 2 - m_right->gutterWidth() - 8;
+    const int columns = side / charW;
+    const bool narrow = m_narrow ? columns < 64 : columns < 60;
+    if (!narrow)
+        m_forceSplit = false;
+    m_narrow = narrow;
+}
+
+void DiffView::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    updateNarrow();
+    updateMode();
 }

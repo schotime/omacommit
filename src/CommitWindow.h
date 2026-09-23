@@ -14,6 +14,7 @@ class QLabel;
 class QLineEdit;
 class QMenu;
 class QPushButton;
+class QSplitter;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -25,6 +26,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *e) override;
+    void showEvent(QShowEvent *e) override;
 
 private:
     void refresh();
@@ -58,6 +60,8 @@ private:
     GitRepo m_repo;
     QVector<FileEntry> m_entries;
 
+    QSplitter *m_split = nullptr;
+    bool m_sized = false;
     QLabel *m_header;
     QLabel *m_repoPath;
     QToolButton *m_historyBtn;

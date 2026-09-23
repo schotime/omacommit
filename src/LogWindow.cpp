@@ -254,7 +254,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     split->setHandleWidth(1);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 1);
-    split->setSizes({700, 700});
+    split->setSizes({700, 700});   // half: the commit table is what you read here
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);

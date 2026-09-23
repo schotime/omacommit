@@ -258,7 +258,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     split->setHandleWidth(1);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 3);
-    split->setSizes({360, 1040});
+    split->setSizes({350, 1050});   // a quarter: the list only needs file names
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->addWidget(split);

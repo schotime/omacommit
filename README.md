@@ -80,6 +80,12 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   so anything else you had staged stays staged but is left out, as in TortoiseGit.
   Untracked files start unchecked; checking one adds it.
 - **The diff is working tree vs HEAD**, i.e. what the commit will contain.
+- **Side by side or inline.** The button next to ↑↓ switches the diff between two
+  columns and one (removed lines above added, with old and new line numbers),
+  in every window; the choice is remembered. When there isn't room for two
+  readable sides it shows inline anyway, marked *Inline · narrow* — click it for
+  side by side regardless. Inline is read-only: typing needs the two sides, but
+  the right-click *Use left …* actions still work.
 - **The right side of the diff is editable**, and nothing is written until you
   save. Type into it directly, or right-click to take from the left (HEAD) as in
   TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from

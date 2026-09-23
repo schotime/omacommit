@@ -9,6 +9,7 @@
 #include <functional>
 
 class QLabel;
+class QScrollBar;
 class QStackedWidget;
 class QTimer;
 class QToolButton;
@@ -31,6 +32,7 @@ public:
         Kind kind = Same;
         int hlStart = -1;   // intra-line change range [hlStart, hlEnd)
         int hlEnd = -1;
+        int number2 = -1;   // inline view: the new side's line number (number is the old side's)
     };
 
     explicit DiffPane(QWidget *parent = nullptr);
@@ -39,6 +41,7 @@ public:
     // where replacing the text would lose the cursor and the undo history.
     void setKinds(const QVector<Line> &lines);
     void setColors(const DiffColors &c);
+    void setDualNumbers(bool dual);   // two line-number columns, for the inline view
 
     int gutterWidth() const;
     void paintGutter(QPaintEvent *e);
@@ -54,6 +57,7 @@ private:
     QWidget *m_gutter;
     QVector<Line> m_lines;
     DiffColors m_c;
+    bool m_dual = false;
 };
 
 class DiffView : public QWidget {
@@ -104,9 +108,17 @@ public:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPane::Line> &right);
+    // Side by side or inline: the rows are the same, only the drawing differs.
+    bool showingRows() const;
+    bool inlineWanted() const;
+    void buildInline();
+    void updateMode();
+    void updateNarrow();
+    QScrollBar *activeScrollBar() const;
     bool rowsFromDiff(const QByteArray &diff, const QStringList &fallback, bool *binary);
     void applyBuffer(const QStringList &buffer);
     QStringList editorLines() const;
@@ -121,6 +133,9 @@ private:
 
     DiffPane *m_left;
     DiffPane *m_right;
+    DiffPane *m_inline;
+    QLabel *m_inlineCaption;
+    QToolButton *m_modeBtn;
     QLabel *m_title;
     QLabel *m_stats;
     QLabel *m_message;
@@ -136,6 +151,10 @@ private:
     QString m_name;
     QVector<DiffPane::Line> m_l, m_r;
     bool m_editable = false;
+    QVector<int> m_inlineToRow, m_rowToInline;
+    bool m_prefInline = false;   // the user's choice, remembered
+    bool m_narrow = false;       // too little width for two readable sides
+    bool m_forceSplit = false;   // side by side asked for while narrow, until it widens
 
     // The right side as last re-diffed, and as it is on disk.
     QStringList m_buffer, m_original;
