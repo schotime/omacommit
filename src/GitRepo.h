@@ -45,6 +45,14 @@ struct UnmergedFile {
     bool has(int s) const { return !stage[s].isEmpty(); }
 };
 
+// Git's whitespace rules for one path: its `whitespace` attribute, else
+// core.whitespace. Empty rules mean git's defaults; check = false means the
+// attribute turns checking off for the path.
+struct WhitespaceRules {
+    bool check = true;
+    QString rules;
+};
+
 struct GitResult {
     int exitCode = -1;
     QByteArray out;
@@ -96,6 +104,12 @@ public:
     QString gitDir() const;
     QString operation() const;   // "merge", "rebase", "cherry-pick", "revert" or empty
     QVector<UnmergedFile> unmerged() const;
+
+    // Whitespace problems on the lines newText adds relative to oldText, as
+    // `git diff --check` reports them, keyed by 1-based line in newText.
+    WhitespaceRules whitespaceRules(const QString &path) const;
+    QHash<int, QString> whitespaceIssues(const WhitespaceRules &rules, const QByteArray &oldText,
+                                         const QByteArray &newText) const;
     QString headParent() const;
     QString scratchIndexPath() const;
     GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,

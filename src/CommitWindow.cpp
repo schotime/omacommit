@@ -361,6 +361,29 @@ void CommitWindow::showCurrentDiff()
     // as something else, so leave it read-only.
     if (editable && m_diff->rightLines() != DiffView::linesOf(m_diffLoaded))
         m_diff->setEditable(false);
+
+    // Whitespace problems on the lines this commit would add -- measured
+    // against the same base as the diff (the parent when amending).
+    m_wsRules = m_repo.whitespaceRules(e.path);
+    m_wsBase.clear();
+    if (!e.untracked() && e.index != u'A' && m_repo.hasHead()) {
+        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
+                                        base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath)});
+        if (b.ok())
+            m_wsBase = b.out;
+    }
+    QByteArray onDisk = m_diffLoaded;
+    if (onDisk.isEmpty()) {
+        QFile f(QDir(m_repo.root()).filePath(e.path));
+        if (f.open(QIODevice::ReadOnly))
+            onDisk = f.readAll();
+    }
+    flagWhitespace(onDisk);
+}
+
+void CommitWindow::flagWhitespace(const QByteArray &text)
+{
+    m_diff->setWhitespaceIssues(m_repo.whitespaceIssues(m_wsRules, m_wsBase, text));
 }
 
 // What the left side of the diff is. Amending replaces HEAD, so the commit
@@ -405,6 +428,8 @@ QByteArray CommitWindow::rediffEdited(const QStringList &lines)
     b.write(text);
     a.close();
     b.close();
+    // The marks follow the edits, checked against the bytes as they would be saved.
+    flagWhitespace(DiffView::compose(lines, m_diffLoaded));
     return m_repo.diffFiles(head, edited);
 }
 

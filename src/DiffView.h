@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QHash>
 #include <QPlainTextEdit>
 #include <QStringList>
 #include <QVector>
@@ -18,6 +19,7 @@ struct DiffColors {
     QColor bg, fg, gutterBg, gutterFg, border;
     QColor removed, removedStrong, added, addedStrong, empty;
     QColor mine, theirs, marker, base;   // conflict sections, in the resolve window
+    QColor issue;                        // whitespace problems on added lines
 };
 
 // One side of the side-by-side diff: read-only editor with a line-number
@@ -33,6 +35,7 @@ public:
         int hlStart = -1;   // intra-line change range [hlStart, hlEnd)
         int hlEnd = -1;
         int number2 = -1;   // inline view: the new side's line number (number is the old side's)
+        QString issue;      // whitespace problem git would report on this line, if any
     };
 
     explicit DiffPane(QWidget *parent = nullptr);
@@ -50,6 +53,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *e) override;
     void resizeEvent(QResizeEvent *e) override;
+    bool viewportEvent(QEvent *e) override;
 
 private:
     void updateGutterWidth();
@@ -77,6 +81,8 @@ public:
     std::function<void()> onSaveRequested;                    // the Save button
     std::function<void()> onOptionsChanged;                   // whitespace settings: show the diff again
     bool showWhitespace() const;
+    // Marks whitespace problems on the right side, keyed by its 1-based line.
+    void setWhitespaceIssues(const QHash<int, QString> &byLine);
 
     void showDiff(const QString &title, const QByteArray &unifiedDiff, bool editable = false);
     void showMessage(const QString &title, const QString &message);
@@ -117,6 +123,7 @@ private:
     void setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPane::Line> &right);
     // Side by side or inline: the rows are the same, only the drawing differs.
     bool showingRows() const;
+    void applyIssues();
     bool inlineWanted() const;
     void buildInline();
     void updateMode();
@@ -143,6 +150,8 @@ private:
     QAction *m_wsShow;
     QAction *m_wsIgnore;
     QLabel *m_wsNote;
+    QLabel *m_issueNote;
+    QHash<int, QString> m_issues;
     bool m_wantEditable = false;
     QLabel *m_title;
     QLabel *m_stats;

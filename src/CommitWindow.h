@@ -36,6 +36,7 @@ private:
     bool writeEdited(const QStringList &lines);
     void saveEdited();
     bool resolveUnsavedEdits(bool allowCancel = true);
+    void flagWhitespace(const QByteArray &text);
     void showFileMenu(const QPoint &pos);
     bool canRevert(const FileEntry &e) const;
     void revertFile(const FileEntry &e);
@@ -86,6 +87,10 @@ private:
     QByteArray m_diffLoaded;
     QByteArray m_diffBase;
     bool m_diffCr = false;   // git's own diff saw CRLF on the file's side
+    // Whitespace checking for the shown file: its rules and the base version
+    // its added lines are measured against.
+    WhitespaceRules m_wsRules;
+    QByteArray m_wsBase;
     std::unique_ptr<QTemporaryDir> m_tmp;
 
     QString m_lastMessage;

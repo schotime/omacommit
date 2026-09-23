@@ -17,6 +17,8 @@
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTimer>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -193,6 +195,22 @@ int DiffPane::gutterWidth() const
     return m_dual ? column * 2 + 26 : column + 18;
 }
 
+bool DiffPane::viewportEvent(QEvent *e)
+{
+    // Hovering a marked line says what git would complain about.
+    if (e->type() == QEvent::ToolTip) {
+        auto *he = static_cast<QHelpEvent *>(e);
+        const int i = cursorForPosition(he->pos()).blockNumber();
+        const QString issue = i >= 0 && i < m_lines.size() ? m_lines.at(i).issue : QString();
+        if (issue.isEmpty())
+            QToolTip::hideText();
+        else
+            QToolTip::showText(he->globalPos(), tr("Whitespace: %1").arg(issue), viewport());
+        return true;
+    }
+    return QPlainTextEdit::viewportEvent(e);
+}
+
 void DiffPane::setShowWhitespace(bool show)
 {
     QTextOption opt = document()->defaultTextOption();
@@ -262,6 +280,30 @@ void DiffPane::paintEvent(QPaintEvent *e)
                     const qreal left = r.left() + layout->position().x();
                     p.fillRect(QRectF(left + x1, r.top(), x2 - x1, r.height()),
                                ln.kind == Removed ? m_c.removedStrong : m_c.addedStrong);
+                }
+            }
+            if (!ln.issue.isEmpty()) {
+                // Solid red over the problem, as git colours it: the trailing
+                // whitespace, the indentation, or the stray blank line.
+                QTextLayout *layout = block.layout();
+                if (layout && layout->lineCount() > 0) {
+                    const QTextLine tl = layout->lineAt(0);
+                    const QString &s = ln.text;
+                    int from = 0, to = int(s.size());
+                    if (ln.issue.contains(QLatin1String("trailing whitespace"))) {
+                        from = int(s.size());
+                        while (from > 0 && s.at(from - 1).isSpace())
+                            --from;
+                    } else if (ln.issue.contains(QLatin1String("indent"))) {
+                        to = 0;
+                        while (to < s.size() && (s.at(to) == u' ' || s.at(to) == u'\t'))
+                            ++to;
+                    }
+                    const qreal left = r.left() + layout->position().x();
+                    qreal x1 = tl.cursorToX(from), x2 = tl.cursorToX(to);
+                    if (x2 - x1 < 1)   // nothing to cover (a blank line): a block the width of a character
+                        x2 = x1 + fontMetrics().horizontalAdvance(u' ');
+                    p.fillRect(QRectF(left + x1, r.top(), x2 - x1, r.height()), m_c.issue);
                 }
             }
         }
@@ -358,6 +400,10 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_wsNote->setToolTip(tr("Changes that only add, remove or re-indent whitespace are hidden, "
                             "and the diff is read-only. Turn it off in the ⋯ menu."));
     m_wsNote->setVisible(m_wsIgnore->isChecked());
+    m_issueNote = new QLabel;
+    m_issueNote->setToolTip(tr("Trailing whitespace and similar problems on lines you are adding, by git's "
+                               "whitespace rules (what git diff --check reports). Hover a red mark for details."));
+    m_issueNote->hide();
 
     m_save = new QToolButton;
     m_save->setText(tr("Save"));
@@ -437,6 +483,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     head->setContentsMargins(10, 6, 8, 6);
     head->addWidget(m_title, 1);
     head->addWidget(m_wsNote);
+    head->addWidget(m_issueNote);
     head->addSpacing(8);
     head->addWidget(m_stats);
     head->addSpacing(10);
@@ -517,6 +564,7 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     const bool sameFile = showingRows() && title == m_name;
     const int keepScroll = activeScrollBar()->value();
 
+    m_issues.clear();
     bool binary = false;
     if (!rowsFromDiff(diff, {}, &binary)) {
         showMessage(title, binary                        ? tr("Binary file, no text diff")
@@ -551,6 +599,8 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_message->setText(message);
     m_l.clear();
     m_r.clear();
+    m_issues.clear();
+    m_issueNote->hide();
     m_buffer.clear();
     m_original.clear();
     m_undo.clear();
@@ -620,6 +670,8 @@ void DiffView::setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPa
             m_changeStarts << i;
         prevChanged = changed;
     }
+    for (DiffPane::Line &l : m_r)
+        l.issue = l.kind == DiffPane::Empty ? QString() : m_issues.value(l.number);
     m_rendering = true;
     m_left->setLines(m_l);
     m_right->setLines(m_r);
@@ -647,6 +699,8 @@ void DiffView::applyTheme()
     c.added = Theme::mix(t.background, right, soft);
     c.addedStrong = Theme::mix(t.background, right, strong);
     c.empty = t.border;
+    c.issue = Theme::mix(t.background, t.red, 0.8);
+    m_issueNote->setStyleSheet(QStringLiteral("color: %1;").arg(t.red.name()));
     m_left->setColors(c);
     m_right->setColors(c);
     m_inline->setColors(c);
@@ -1148,4 +1202,22 @@ void DiffView::resizeEvent(QResizeEvent *event)
 bool DiffView::showWhitespace() const
 {
     return m_wsShow->isChecked();
+}
+
+void DiffView::setWhitespaceIssues(const QHash<int, QString> &byLine)
+{
+    m_issues = byLine;
+    applyIssues();
+}
+
+// Marks the rows on the right (and so the inline view) and counts them up.
+void DiffView::applyIssues()
+{
+    for (DiffPane::Line &l : m_r)
+        l.issue = l.kind == DiffPane::Empty ? QString() : m_issues.value(l.number);
+    m_right->setKinds(m_r);
+    buildInline();
+    const int n = int(m_issues.size());
+    m_issueNote->setText(n == 1 ? tr("1 whitespace issue") : tr("%1 whitespace issues").arg(n));
+    m_issueNote->setVisible(n > 0 && showingRows());
 }

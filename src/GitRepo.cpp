@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QRegularExpression>
+#include <QTemporaryDir>
 
 namespace {
 QProcessEnvironment gitEnv()
@@ -464,4 +466,61 @@ QStringList GitRepo::commitArgs(const QStringList &paths, bool amend, bool mergi
     else if (amend)
         a << QStringLiteral("--only");   // reword only
     return a;
+}
+
+WhitespaceRules GitRepo::whitespaceRules(const QString &path) const
+{
+    WhitespaceRules r;
+    // "<path>: whitespace: <unspecified|set|unset|rules>"
+    const QString line = QString::fromUtf8(run({QStringLiteral("check-attr"), QStringLiteral("whitespace"),
+                                                QStringLiteral("--"), path}).out).trimmed();
+    const QString value = line.section(QStringLiteral(": "), -1);
+    if (value == u"unset") {
+        r.check = false;
+    } else if (value == u"set") {
+        // What git applies for a bare `whitespace` attribute: every rule that
+        // flags an error and isn't opt-in.
+        r.rules = QStringLiteral("blank-at-eol,blank-at-eof,space-before-tab,indent-with-non-tab");
+    } else if (value != u"unspecified" && !value.isEmpty()) {
+        r.rules = value;
+    } else {
+        r.rules = QString::fromUtf8(run({QStringLiteral("config"), QStringLiteral("--get"),
+                                         QStringLiteral("core.whitespace")}).out).trimmed();
+    }
+    return r;
+}
+
+QHash<int, QString> GitRepo::whitespaceIssues(const WhitespaceRules &rules, const QByteArray &oldText,
+                                              const QByteArray &newText) const
+{
+    QHash<int, QString> out;
+    if (!rules.check || newText.isEmpty())
+        return out;
+    QTemporaryDir tmp;
+    const QString oldPath = tmp.filePath(QStringLiteral("old"));
+    const QString newPath = tmp.filePath(QStringLiteral("new"));
+    for (const auto &[file, data] : {std::pair{oldPath, oldText}, std::pair{newPath, newText}}) {
+        QFile f(file);
+        if (!f.open(QIODevice::WriteOnly))
+            return out;
+        f.write(data);
+    }
+    // --no-index doesn't read .gitattributes, so the path's rules come in
+    // through core.whitespace -- plus cr-at-eol: a CRLF line ending is a line
+    // ending, not trailing whitespace, and flagging it would mark every line
+    // of a CRLF file. A space before the \r\n is still flagged.
+    const QString effective = rules.rules.isEmpty() ? QStringLiteral("cr-at-eol")
+                                                    : rules.rules + QStringLiteral(",cr-at-eol");
+    QStringList args{QStringLiteral("-c"), QStringLiteral("core.whitespace=") + effective};
+    args << QStringLiteral("diff") << QStringLiteral("--no-index") << QStringLiteral("--check")
+         << QStringLiteral("--no-color") << QStringLiteral("--") << oldPath << newPath;
+    static const QRegularExpression re(QStringLiteral(R"(^(.*):(\d+): (.+)\.$)"));
+    for (const QString &line : QString::fromUtf8(run(args).out).split(u'\n')) {
+        const auto m = re.match(line);
+        if (!m.hasMatch() || !m.captured(1).endsWith(QLatin1String("new")))
+            continue;
+        const int n = m.captured(2).toInt();
+        out[n] = out.value(n).isEmpty() ? m.captured(3) : out.value(n) + QStringLiteral("; ") + m.captured(3);
+    }
+    return out;
 }

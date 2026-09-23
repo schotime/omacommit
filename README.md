@@ -93,6 +93,18 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   git shows the unchanged-looking lines with the new side's whitespace, so
   *Use left* couldn't restore the old — and the option waits until unsaved edits
   are saved or discarded. It only changes what you see, never what is committed.
+- **Whitespace problems are flagged** in `og commit`, on the lines you are adding:
+  trailing whitespace, a space before a tab in the indent, a blank line added at
+  the end of the file — whatever `git diff --check` would report, under your
+  `core.whitespace` and `.gitattributes`. The spot is marked in red (hover it for
+  what's wrong) and the header counts them; it never blocks a commit. Existing
+  whitespace in lines you didn't touch isn't flagged, and neither is a CRLF line
+  ending. Markdown uses two trailing spaces for a line break, which git flags
+  too; to allow them for both git and og, add to `.gitattributes`:
+
+  ```
+  *.md whitespace=-blank-at-eol
+  ```
 - **The right side of the diff is editable**, and nothing is written until you
   save. Type into it directly, or right-click to take from the left (HEAD) as in
   TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from
