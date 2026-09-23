@@ -208,7 +208,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     // Restore an unsent message from last time.
     const QString draft = QSettings().value(draftKey()).toString();
     if (!draft.isEmpty())
-        m_message->setPlainText(draft);
+        setMessage(draft);
     // Otherwise, mid-merge (or cherry-pick, or revert), start from the message
     // git prepared. Its # lines are instructions: `commit -F` would keep them.
     if (m_message->toPlainText().trimmed().isEmpty()) {
@@ -218,7 +218,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
             for (const QString &line : QString::fromUtf8(prepared.readAll()).split(u'\n'))
                 if (!line.startsWith(u'#'))
                     keep << line;
-            m_message->setPlainText(keep.join(u'\n').trimmed());
+            setMessage(keep.join(u'\n').trimmed());
         }
     }
 
@@ -740,7 +740,7 @@ void CommitWindow::onAmendToggled(bool on)
     if (on) {
         m_lastMessage = m_repo.lastCommitMessage();
         if (m_message->toPlainText().trimmed().isEmpty())
-            m_message->setPlainText(m_lastMessage);
+            setMessage(m_lastMessage);
     } else if (m_message->toPlainText().trimmed() == m_lastMessage) {
         m_message->clear();
     }
@@ -965,6 +965,15 @@ void CommitWindow::showError(const QString &title, const QString &details)
     box.exec();
 }
 
+// Text put in the message for you -- a saved draft, git's prepared message,
+// the last message when amending, a recent one -- leaves the cursor at its
+// end, where you would carry on typing.
+void CommitWindow::setMessage(const QString &text)
+{
+    m_message->setPlainText(text);
+    m_message->moveCursor(QTextCursor::End);
+}
+
 void CommitWindow::updateWriteButton()
 {
     if (m_writer) {
@@ -1141,7 +1150,7 @@ void CommitWindow::rebuildHistoryMenu()
             label = label.left(69) + QStringLiteral("…");
         auto *act = m_historyMenu->addAction(label.replace(u'&', QStringLiteral("&&")));
         act->setToolTip(msg);
-        connect(act, &QAction::triggered, this, [this, msg] { m_message->setPlainText(msg); });
+        connect(act, &QAction::triggered, this, [this, msg] { setMessage(msg); });
     }
 }
 

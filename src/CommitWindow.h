@@ -40,6 +40,7 @@ private:
     bool resolveUnsavedEdits(bool allowCancel = true);
     void flagWhitespace(const QByteArray &text);
     void updateWriteButton();
+    void setMessage(const QString &text);
     void writeMessage();
     QString messagePrompt() const;
     void showFileMenu(const QPoint &pos);
