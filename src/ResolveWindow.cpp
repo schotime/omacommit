@@ -146,6 +146,13 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     // --- right, page 0: the two sides over the merged file
     m_top = new DiffView;
     m_top->setNavShortcutsEnabled(false);
+    // Whitespace settings: the sides are diffed again; the merged file only
+    // changes how it is drawn, so edits in it are never reset.
+    m_top->onOptionsChanged = [this] {
+        m_merged->setShowWhitespace(m_top->showWhitespace());
+        if (m_stack->currentIndex() == 0)
+            showSides();
+    };
 
     m_mergedTitle = new QLabel;
     m_mergedTitle->setObjectName(QStringLiteral("section"));
@@ -183,6 +190,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
 
     m_merged = new DiffPane;
     m_merged->setReadOnly(false);
+    m_merged->setShowWhitespace(m_top->showWhitespace());
 
     auto *mergedPanel = new QWidget;
     auto *ml = new QVBoxLayout(mergedPanel);
@@ -544,8 +552,8 @@ void ResolveWindow::openText(const UnmergedFile &u)
     // The two sides, aligned against each other: incoming left, current right.
     if (!m_tmp)
         m_tmp = std::make_unique<QTemporaryDir>();
-    const QString incPath = m_tmp->filePath(QStringLiteral("incoming"));
-    const QString curPath = m_tmp->filePath(QStringLiteral("current"));
+    const QString incPath = m_incPath = m_tmp->filePath(QStringLiteral("incoming"));
+    const QString curPath = m_curPath = m_tmp->filePath(QStringLiteral("current"));
     for (const auto &[file, data] : {std::pair{incPath, inc}, std::pair{curPath, cur}}) {
         QFile out(file);
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -553,14 +561,7 @@ void ResolveWindow::openText(const UnmergedFile &u)
     }
     m_incLines = DiffView::linesOf(inc);
     m_curLines = DiffView::linesOf(cur);
-    // Yours on the right, the other side on the left.
-    if (m_mineIsIncoming) {
-        m_top->showDiff(u.path, m_repo.diffFiles(curPath, incPath), false);
-        m_top->setPaneCaptions(m_curLong, m_incLong);
-    } else {
-        m_top->showDiff(u.path, m_repo.diffFiles(incPath, curPath), false);
-        m_top->setPaneCaptions(m_incLong, m_curLong);
-    }
+    showSides();
 
     // The merged file starts as git left it -- markers and all, or whatever
     // has been done to it since.
@@ -576,6 +577,18 @@ void ResolveWindow::openText(const UnmergedFile &u)
     m_current = -1;
     if (!m_conflicts.isEmpty())
         gotoConflict(0);
+}
+
+// The two sides, aligned against each other: yours on the right.
+void ResolveWindow::showSides()
+{
+    if (m_mineIsIncoming) {
+        m_top->showDiff(m_path, m_repo.diffFiles(m_curPath, m_incPath), false);
+        m_top->setPaneCaptions(m_curLong, m_incLong);
+    } else {
+        m_top->showDiff(m_path, m_repo.diffFiles(m_incPath, m_curPath), false);
+        m_top->setPaneCaptions(m_incLong, m_curLong);
+    }
 }
 
 void ResolveWindow::openWholeFile(const UnmergedFile &u)

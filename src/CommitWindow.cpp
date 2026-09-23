@@ -102,6 +102,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_diff->rediff = [this](const QStringList &lines) { return rediffEdited(lines); };
     m_diff->onSave = [this](const QStringList &lines) { return writeEdited(lines); };
     m_diff->onSaveRequested = [this] { saveEdited(); };
+    m_diff->onOptionsChanged = [this] { showCurrentDiff(); };
 
     // --- layout
     auto *left = new QWidget;

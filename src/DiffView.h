@@ -42,6 +42,7 @@ public:
     void setKinds(const QVector<Line> &lines);
     void setColors(const DiffColors &c);
     void setDualNumbers(bool dual);   // two line-number columns, for the inline view
+    void setShowWhitespace(bool show); // spaces as ·, tabs as →
 
     int gutterWidth() const;
     void paintGutter(QPaintEvent *e);
@@ -74,6 +75,8 @@ public:
     std::function<QByteArray(const QStringList &)> rediff;   // right lines -> unified diff against left
     std::function<bool(const QStringList &)> onSave;          // write them; false if not written
     std::function<void()> onSaveRequested;                    // the Save button
+    std::function<void()> onOptionsChanged;                   // whitespace settings: show the diff again
+    bool showWhitespace() const;
 
     void showDiff(const QString &title, const QByteArray &unifiedDiff, bool editable = false);
     void showMessage(const QString &title, const QString &message);
@@ -136,6 +139,11 @@ private:
     DiffPane *m_inline;
     QLabel *m_inlineCaption;
     QToolButton *m_modeBtn;
+    QToolButton *m_optsBtn;
+    QAction *m_wsShow;
+    QAction *m_wsIgnore;
+    QLabel *m_wsNote;
+    bool m_wantEditable = false;
     QLabel *m_title;
     QLabel *m_stats;
     QLabel *m_message;

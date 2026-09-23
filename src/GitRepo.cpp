@@ -233,6 +233,8 @@ QByteArray GitRepo::diffBetween(const QString &from, const QString &to, const Fi
     QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
                      QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--histogram"),
                      QStringLiteral("-U1000000"), QStringLiteral("-M"), from, to, QStringLiteral("--")};
+    if (s_ignoreWhitespace)
+        args.insert(args.indexOf(QStringLiteral("-M")), QStringLiteral("-w"));
     if (!f.oldPath.isEmpty())
         args << f.oldPath;
     args << f.path;
@@ -416,9 +418,13 @@ void GitRepo::refreshIndexAfterAmend(const QStringList &paths) const
 // the same way. Exits 1 when they differ; that's expected.
 QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
 {
-    return run({QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--no-color"),
-                QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), QStringLiteral("--histogram"),
-                QStringLiteral("-U1000000"), QStringLiteral("--"), a, b}).out;
+    QStringList args{QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--no-color"),
+                     QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), QStringLiteral("--histogram"),
+                     QStringLiteral("-U1000000")};
+    if (s_ignoreWhitespace)
+        args << QStringLiteral("-w");
+    args << QStringLiteral("--") << a << b;
+    return run(args).out;
 }
 
 QByteArray GitRepo::diff(const FileEntry &f, const QString &base) const
@@ -427,6 +433,8 @@ QByteArray GitRepo::diff(const FileEntry &f, const QString &base) const
     QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
                      QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--histogram"),
                      QStringLiteral("-U1000000")};
+    if (s_ignoreWhitespace)
+        args << QStringLiteral("-w");
     if (f.untracked()) {
         args << QStringLiteral("--no-index") << QStringLiteral("--") << QStringLiteral("/dev/null") << f.path;
         return run(args).out;   // exits 1 when files differ; that's expected

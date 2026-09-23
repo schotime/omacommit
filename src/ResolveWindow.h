@@ -39,6 +39,7 @@ private:
     void openSelected();
     void openText(const UnmergedFile &u);
     void openWholeFile(const UnmergedFile &u);
+    void showSides();
     bool resolveUnsaved(bool allowCancel = true);
 
     QStringList mergedLines() const;
@@ -95,6 +96,7 @@ private:
     QString m_path;              // the file open on the right
     QByteArray m_loaded;         // its bytes as opened, to spot outside changes
     QStringList m_curLines, m_incLines;
+    QString m_incPath, m_curPath;   // the two sides, written out for git diff
     QVector<Conflict> m_conflicts;
     int m_current = -1;
     QSet<QString> m_resolved;    // marked resolved this session: kept in the list, ticked

@@ -1,4 +1,5 @@
 #include "DiffView.h"
+#include "GitRepo.h"
 #include "Theme.h"
 
 #include <QEvent>
@@ -192,6 +193,14 @@ int DiffPane::gutterWidth() const
     return m_dual ? column * 2 + 26 : column + 18;
 }
 
+void DiffPane::setShowWhitespace(bool show)
+{
+    QTextOption opt = document()->defaultTextOption();
+    opt.setFlags(show ? opt.flags() | QTextOption::ShowTabsAndSpaces : opt.flags() & ~QTextOption::ShowTabsAndSpaces);
+    document()->setDefaultTextOption(opt);
+    viewport()->update();
+}
+
 void DiffPane::setDualNumbers(bool dual)
 {
     m_dual = dual;
@@ -330,6 +339,26 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_modeBtn = new QToolButton;
     m_prefInline = QSettings().value(QStringLiteral("diff/inline"), false).toBool();
 
+    // Whitespace settings, remembered: showing it, and ignoring changes to it.
+    m_optsBtn = new QToolButton;
+    m_optsBtn->setText(QStringLiteral("⋯"));
+    m_optsBtn->setToolTip(tr("Whitespace settings"));
+    m_optsBtn->setPopupMode(QToolButton::InstantPopup);
+    auto *opts = new QMenu(m_optsBtn);
+    m_wsShow = opts->addAction(tr("Show whitespace (spaces ·, tabs →)"));
+    m_wsShow->setCheckable(true);
+    m_wsShow->setChecked(QSettings().value(QStringLiteral("diff/showWhitespace"), false).toBool());
+    m_wsIgnore = opts->addAction(tr("Ignore whitespace changes"));
+    m_wsIgnore->setCheckable(true);
+    m_wsIgnore->setChecked(QSettings().value(QStringLiteral("diff/ignoreWhitespace"), false).toBool());
+    m_optsBtn->setMenu(opts);
+    GitRepo::setIgnoreWhitespace(m_wsIgnore->isChecked());
+    m_wsNote = new QLabel(tr("whitespace ignored"));
+    m_wsNote->setObjectName(QStringLiteral("muted"));
+    m_wsNote->setToolTip(tr("Changes that only add, remove or re-indent whitespace are hidden, "
+                            "and the diff is read-only. Turn it off in the ⋯ menu."));
+    m_wsNote->setVisible(m_wsIgnore->isChecked());
+
     m_save = new QToolButton;
     m_save->setText(tr("Save"));
     m_save->setToolTip(tr("Write the edited file to disk (Ctrl+S)"));
@@ -407,9 +436,12 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     auto *head = new QHBoxLayout;
     head->setContentsMargins(10, 6, 8, 6);
     head->addWidget(m_title, 1);
+    head->addWidget(m_wsNote);
+    head->addSpacing(8);
     head->addWidget(m_stats);
     head->addSpacing(10);
     head->addWidget(m_save);
+    head->addWidget(m_optsBtn);
     head->addWidget(m_modeBtn);
     head->addWidget(m_prev);
     head->addWidget(m_next);
@@ -449,6 +481,24 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
         updateMode();
     });
 
+    connect(m_wsShow, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("diff/showWhitespace"), on);
+        for (DiffPane *pane : {m_left, m_right, m_inline})
+            pane->setShowWhitespace(on);
+        if (onOptionsChanged)
+            onOptionsChanged();
+    });
+    connect(m_wsIgnore, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("diff/ignoreWhitespace"), on);
+        GitRepo::setIgnoreWhitespace(on);
+        m_wsNote->setVisible(on);
+        setEditable(m_wantEditable);
+        if (onOptionsChanged)
+            onOptionsChanged();
+    });
+    for (DiffPane *pane : {m_left, m_right, m_inline})
+        pane->setShowWhitespace(m_wsShow->isChecked());
+
     for (DiffPane *pane : {m_left, m_right, m_inline}) {
         pane->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(pane, &QWidget::customContextMenuRequested, this,
@@ -469,11 +519,14 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
 
     bool binary = false;
     if (!rowsFromDiff(diff, {}, &binary)) {
-        showMessage(title, binary ? tr("Binary file, no text diff") : tr("No content changes"));
+        showMessage(title, binary                        ? tr("Binary file, no text diff")
+                           : GitRepo::ignoreWhitespace() ? tr("Only whitespace changed (whitespace is being ignored)")
+                                                         : tr("No content changes"));
         return;
     }
     m_name = title;
     m_stack->setCurrentIndex(inlineWanted() ? 2 : 0);
+    updateStats();   // computed while a message may still have been showing
     m_buffer = m_original = rightLines();
     m_undo.clear();
     m_redo.clear();
@@ -650,7 +703,10 @@ void DiffView::updateNav()
 
 void DiffView::setEditable(bool editable)
 {
-    m_editable = editable && showingRows();
+    // Ignoring whitespace, git shows unchanged-looking lines with the new side's
+    // text, so "use left" could not restore the old whitespace: read-only then.
+    m_wantEditable = editable;
+    m_editable = editable && showingRows() && !GitRepo::ignoreWhitespace();
     m_right->setReadOnly(!m_editable);
     updateHeader();
 }
@@ -665,6 +721,8 @@ void DiffView::updateHeader()
     const bool dirty = isDirty();
     m_title->setText(dirty ? QStringLiteral("● ") + m_name : m_name);
     m_save->setVisible(dirty);
+    m_wsIgnore->setEnabled(!dirty);
+    m_wsIgnore->setToolTip(dirty ? tr("Save or discard your edits first") : QString());
 }
 
 bool DiffView::isChanged(int row) const
@@ -1085,4 +1143,9 @@ void DiffView::resizeEvent(QResizeEvent *event)
     QWidget::resizeEvent(event);
     updateNarrow();
     updateMode();
+}
+
+bool DiffView::showWhitespace() const
+{
+    return m_wsShow->isChecked();
 }

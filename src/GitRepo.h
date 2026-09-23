@@ -59,6 +59,11 @@ class GitRepo {
 public:
     static QString findRoot(const QString &startDir);
 
+    // Diffs ignore whitespace changes (-w) while this is on. Display only:
+    // nothing about what gets committed depends on it.
+    static void setIgnoreWhitespace(bool on) { s_ignoreWhitespace = on; }
+    static bool ignoreWhitespace() { return s_ignoreWhitespace; }
+
     explicit GitRepo(const QString &root);
     QString root() const { return m_root; }
 
@@ -101,5 +106,6 @@ public:
     QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 
 private:
+    static inline bool s_ignoreWhitespace = false;
     QString m_root;
 };

@@ -86,6 +86,13 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   two readable sides it shows inline anyway, with the icon in the accent colour —
   click it for side by side regardless. Inline is read-only: typing needs the two
   sides, but the right-click *Use left …* actions still work.
+- **Whitespace** (the ⋯ button, remembered, in every window): *Show whitespace*
+  draws spaces as `·` and tabs as `→`; *Ignore whitespace changes* hides changes
+  that only add, remove or re-indent whitespace (`git diff -w`), with a
+  *whitespace ignored* note in the header. While ignoring, the diff is read-only —
+  git shows the unchanged-looking lines with the new side's whitespace, so
+  *Use left* couldn't restore the old — and the option waits until unsaved edits
+  are saved or discarded. It only changes what you see, never what is committed.
 - **The right side of the diff is editable**, and nothing is written until you
   save. Type into it directly, or right-click to take from the left (HEAD) as in
   TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from

@@ -202,6 +202,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_files->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 
     m_diff = new DiffView;
+    m_diff->onOptionsChanged = [this] { showFileDiff(); };
 
     // --- layout: commits over details over files, diff on the right
     auto *commitsPane = new QWidget;
