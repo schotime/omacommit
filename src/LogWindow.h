@@ -30,6 +30,8 @@ private:
     void loadMore();
     void showCommit();
     void showFileDiff();
+    void showCommitMenu(const QPoint &pos);
+    void revertCommit(const LogCommit &c);
     void applyTheme();
     void sizeColumns();
     QString baseOf(const LogCommit &c) const;

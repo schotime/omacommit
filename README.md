@@ -153,7 +153,11 @@ names (current branch bold, local branches, remotes and tags in their own
 colours) and a ring on the commit HEAD is on. Selecting a commit shows its
 message and details, and the files it changed under the graph; selecting a
 file shows its diff against the commit's parent on the right. Merges are shown
-against their first parent. History loads as you scroll, and *All branches*
+against their first parent. Right-click a commit → **Revert changes by this commit…** undoes its changes in
+your working tree without committing (TortoiseGit's revert), so you can review
+them; then **Open commit dialog** starts from git's prepared *Revert "…"*
+message, or **Resolve…** if undoing it conflicts with later changes. A merge is
+undone relative to its first parent. History loads as you scroll, and *All branches*
 switches between every branch, remote and tag and only the current branch.
 F5 reloads, Esc closes.
 
@@ -180,8 +184,12 @@ open it first; `og commit` also offers **Resolve…** on a conflicted file.
 - Binary files, and files deleted on one side, get whole-file choices: use
   or keep one side, or delete it.
 - Once nothing is left unresolved, **Commit merge…** opens `og commit` with
-  git's prepared message (also for cherry-picks and reverts). A rebase
-  continues with `git rebase --continue`.
+  git's prepared message (also for cherry-picks and reverts). In a rebase,
+  **Continue rebase** replays the next commit (`git rebase --continue`, keeping
+  its message): the window moves on to that commit's conflicts, with the sides
+  named for it, or says the rebase is finished.
+- The file list counts each file's conflicts as you resolve them (`● ` marks
+  unsaved changes), not only when it is reloaded.
 
 ## Theming
 

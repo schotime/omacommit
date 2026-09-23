@@ -1,6 +1,8 @@
 #include "LogWindow.h"
+#include "CommitWindow.h"
 #include "DiffView.h"
 #include "ElidedLabel.h"
+#include "ResolveWindow.h"
 #include "Theme.h"
 
 #include <QCheckBox>
@@ -9,6 +11,9 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
@@ -263,6 +268,8 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
 
     // --- signals
     connect(m_commits, &QTreeWidget::currentItemChanged, this, &LogWindow::showCommit);
+    m_commits->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_commits, &QWidget::customContextMenuRequested, this, &LogWindow::showCommitMenu);
     connect(m_files, &QTreeWidget::currentItemChanged, this, &LogWindow::showFileDiff);
     connect(m_allBranches, &QCheckBox::toggled, this, &LogWindow::reload);
     // Fetch the next batch as the list nears its end.
@@ -410,6 +417,80 @@ void LogWindow::showFileDiff()
     const LogCommit &c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
     m_diff->showDiff(fi->text(0), m_repo.diffBetween(baseOf(c), c.hash, f), false);
+}
+
+void LogWindow::showCommitMenu(const QPoint &pos)
+{
+    auto *it = m_commits->itemAt(pos);
+    if (!it)
+        return;
+    const LogCommit c = m_log.at(it->data(0, RowRole).toInt());
+    QMenu menu(this);
+    QAction *revert = menu.addAction(tr("Revert changes by this commit…"));
+    revert->setEnabled(m_repo.operation().isEmpty());
+    if (!revert->isEnabled())
+        revert->setToolTip(tr("Finish the %1 in progress first").arg(m_repo.operation()));
+    if (menu.exec(m_commits->viewport()->mapToGlobal(pos)) == revert)
+        revertCommit(c);
+}
+
+// TortoiseGit's "Revert changes by this commit": the commit's changes are
+// undone in the working tree, not committed, so they can be reviewed first.
+// git leaves its prepared "Revert ..." message, which og commit starts from.
+void LogWindow::revertCommit(const LogCommit &c)
+{
+    const bool merge = c.parents.size() > 1;
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("Revert %1").arg(c.hash.left(8)));
+    box.setTextFormat(Qt::PlainText);   // the subject is shown as written
+    box.setText(tr("Undo the changes made by %1 “%2”?").arg(c.hash.left(8), c.subject));
+    box.setInformativeText(
+        (merge ? tr("It is a merge: what it brought in, compared with its first parent, is undone.\n\n") : QString())
+        + tr("The changes are undone in your working tree and nothing is committed, so you can review "
+             "them and commit when ready."));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(tr("Revert"));
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Ok)
+        return;
+
+    QStringList args{QStringLiteral("revert"), QStringLiteral("--no-commit")};
+    if (merge)
+        args << QStringLiteral("-m") << QStringLiteral("1");
+    const GitResult r = m_repo.run(args << c.hash);
+    const QString output = QString::fromUtf8(r.out + r.err).trimmed();
+
+    auto open = [this](QWidget *w) {
+        w->setAttribute(Qt::WA_DeleteOnClose);
+        w->resize(size());
+        w->show();
+    };
+    if (r.ok()) {
+        QMessageBox done(this);
+        done.setIcon(QMessageBox::Information);
+        done.setWindowTitle(tr("Reverted"));
+        done.setText(tr("The changes made by %1 are undone in your working tree.").arg(c.hash.left(8)));
+        done.setInformativeText(tr("Commit them to record the revert; the message git prepared is filled in."));
+        QPushButton *commitNow = done.addButton(tr("Open commit dialog"), QMessageBox::AcceptRole);
+        done.addButton(tr("Later"), QMessageBox::RejectRole);
+        done.exec();
+        if (done.clickedButton() == commitNow)
+            open(new CommitWindow(m_repo.root()));
+    } else if (!m_repo.unmerged().isEmpty()) {
+        QMessageBox clash(this);
+        clash.setIcon(QMessageBox::Warning);
+        clash.setWindowTitle(tr("Revert has conflicts"));
+        clash.setText(tr("Undoing %1 conflicts with later changes.").arg(c.hash.left(8)));
+        clash.setInformativeText(tr("Resolve the conflicts, then commit the revert."));
+        QPushButton *resolve = clash.addButton(tr("Resolve…"), QMessageBox::AcceptRole);
+        clash.addButton(tr("Later"), QMessageBox::RejectRole);
+        clash.exec();
+        if (clash.clickedButton() == resolve)
+            open(new ResolveWindow(m_repo.root()));
+    } else {
+        QMessageBox::warning(this, tr("Could not revert %1").arg(c.hash.left(8)), output.right(1500));
+    }
 }
 
 QColor LogWindow::statusColor(QChar status) const

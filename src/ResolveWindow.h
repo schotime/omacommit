@@ -11,6 +11,7 @@
 class DiffPane;
 class DiffView;
 class QLabel;
+class QProcess;
 class QPushButton;
 class QStackedWidget;
 class QToolButton;
@@ -54,6 +55,9 @@ private:
     void markResolved();
     void finishWith(const QStringList &gitArgs, const QStringList &thenArgs = {});
     void commit();
+    void continueRebase();
+    void updateOpenFileState();
+    static QString bothState(bool hasBase, int left);
     void selectNextUnresolved();
     void updateActions();
     void applyTheme();
@@ -74,6 +78,8 @@ private:
     QLabel *m_hintLabel;
     QLabel *m_status;
     QPushButton *m_commitBtn;
+    QPushButton *m_continueBtn;
+    QProcess *m_continuing = nullptr;
     QStackedWidget *m_stack;
     DiffView *m_top;
     DiffPane *m_merged;
@@ -96,6 +102,7 @@ private:
     QString m_path;              // the file open on the right
     QByteArray m_loaded;         // its bytes as opened, to spot outside changes
     QStringList m_curLines, m_incLines;
+    bool m_openHasBase = true;   // the open file has a common ancestor (both modified, not both added)
     QString m_incPath, m_curPath;   // the two sides, written out for git diff
     QVector<Conflict> m_conflicts;
     int m_current = -1;

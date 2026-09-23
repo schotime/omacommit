@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -123,6 +124,11 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_commitBtn->setObjectName(QStringLiteral("primary"));
     m_commitBtn->setToolTip(tr("Open the commit dialog once every file is resolved"));
     m_commitBtn->setVisible(m_canCommit);
+    // A rebase goes on commit by commit: git rebase --continue from here.
+    m_continueBtn = new QPushButton(tr("Continue rebase"));
+    m_continueBtn->setObjectName(QStringLiteral("primary"));
+    m_continueBtn->setToolTip(tr("Record the resolution and replay the next commit (git rebase --continue)"));
+    m_continueBtn->setVisible(m_operation == u"rebase");
 
     auto *left = new QWidget;
     auto *ll = new QVBoxLayout(left);
@@ -141,6 +147,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     auto *foot = new QHBoxLayout;
     foot->addWidget(m_status, 1);
     foot->addWidget(m_commitBtn);
+    foot->addWidget(m_continueBtn);
     ll->addLayout(foot);
 
     // --- right, page 0: the two sides over the merged file
@@ -282,6 +289,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     connect(m_saveBtn, &QPushButton::clicked, this, [this] { save(); });
     connect(m_resolvedBtn, &QPushButton::clicked, this, &ResolveWindow::markResolved);
     connect(m_commitBtn, &QPushButton::clicked, this, &ResolveWindow::commit);
+    connect(m_continueBtn, &QPushButton::clicked, this, &ResolveWindow::continueRebase);
     auto step = [this](int dir) {
         const int line = m_merged->textCursor().blockNumber();
         int k = -1;
@@ -360,7 +368,7 @@ void ResolveWindow::describeSides()
                                   : tr("Upstream — %1 + %2 of your commits, already replayed").arg(base).arg(replayed);
         m_incShort = tr("mine");
         m_incLong = replaying.isEmpty() ? tr("Mine — the commit being replayed") : tr("Mine — replaying %1").arg(replaying);
-        m_hint = tr("When every file is resolved, continue with git rebase --continue.");
+        m_hint = tr("Resolve every file, then continue the rebase to the next commit.");
         m_opText = tr("Rebasing onto <b>%1</b>").arg((onto.isEmpty() ? tr("HEAD") : onto).toHtmlEscaped());
     } else if (m_operation == u"cherry-pick") {
         const QString picked = describe(QStringLiteral("CHERRY_PICK_HEAD"));
@@ -415,13 +423,8 @@ void ResolveWindow::refreshList(const QString &select)
                                                      [&](const UnmergedFile &x) { return x.path == p; });
                 QString state;
                 if (u.has(2) && u.has(3)) {
-                    state = u.has(1) ? tr("Both modified") : tr("Both added");
                     QFile f(QDir(m_repo.root()).filePath(p));
-                    if (f.open(QIODevice::ReadOnly)) {
-                        const int n = countConflicts(f.readAll());
-                        if (n > 0)
-                            state += QStringLiteral(" · ") + tr("%1 left").arg(n);
-                    }
+                    state = bothState(u.has(1), f.open(QIODevice::ReadOnly) ? countConflicts(f.readAll()) : -1);
                 } else if (u.has(2)) {
                     state = u.has(1) ? tr("Deleted in %1").arg(m_incShort) : tr("Added in %1 only").arg(m_curShort);
                 } else if (u.has(3)) {
@@ -439,6 +442,7 @@ void ResolveWindow::refreshList(const QString &select)
     }
     const bool allDone = unmerged.isEmpty();
     m_commitBtn->setEnabled(allDone);
+    m_continueBtn->setEnabled(allDone && !m_continuing);
     if (allDone && !m_listed.isEmpty())
         m_status->setText(tr("All conflicts resolved."));
 
@@ -451,6 +455,31 @@ void ResolveWindow::refreshList(const QString &select)
     if (toSelect)
         m_files->setCurrentItem(toSelect);
     openSelected();
+}
+
+QString ResolveWindow::bothState(bool hasBase, int left)
+{
+    const QString s = hasBase ? tr("Both modified") : tr("Both added");
+    if (left < 0)
+        return s;
+    return s + QStringLiteral(" · ") + (left == 0 ? tr("none left") : tr("%1 left").arg(left));
+}
+
+// The open file's row counts the conflicts still in the merged pane as they
+// are resolved, not only what is on disk.
+void ResolveWindow::updateOpenFileState()
+{
+    if (m_stack->currentIndex() != 0)
+        return;
+    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
+        auto *it = m_files->topLevelItem(i);
+        if (it->data(0, PathRole).toString() != m_path || m_resolved.contains(m_path))
+            continue;
+        QString state = bothState(m_openHasBase, int(m_conflicts.size()));
+        if (m_merged->document()->isModified())
+            state += QStringLiteral(" ●");   // not saved yet
+        it->setText(1, state);
+    }
 }
 
 void ResolveWindow::selectNextUnresolved()
@@ -561,6 +590,7 @@ void ResolveWindow::openText(const UnmergedFile &u)
     }
     m_incLines = DiffView::linesOf(inc);
     m_curLines = DiffView::linesOf(cur);
+    m_openHasBase = u.has(1);
     showSides();
 
     // The merged file starts as git left it -- markers and all, or whatever
@@ -684,6 +714,7 @@ void ResolveWindow::parseMerged()
         }
     }
     m_merged->setKinds(rows);
+    updateOpenFileState();
     updateActions();
 }
 
@@ -794,8 +825,14 @@ void ResolveWindow::useWholeSide(bool incoming)
 
 bool ResolveWindow::save()
 {
-    if (m_stack->currentIndex() != 0 || !m_merged->document()->isModified())
+    if (m_stack->currentIndex() != 0)
         return true;
+    // Decided by content, not the editor's modified flag: Mark resolved stages
+    // what is on disk, so it must be exactly what the pane shows.
+    if (DiffView::compose(mergedLines(), m_loaded) == m_loaded) {
+        m_merged->document()->setModified(false);
+        return true;
+    }
     const QString file = QDir(m_repo.root()).filePath(m_path);
     QFile in(file);
     const QByteArray onDisk = in.open(QIODevice::ReadOnly) ? in.readAll() : QByteArray();
@@ -880,6 +917,57 @@ void ResolveWindow::commit()
     cw->resize(size());
     cw->show();
     close();
+}
+
+// git rebase --continue: records this stop's resolution and replays the next
+// commit. It either finishes, stops at the next commit's conflicts -- the
+// window then moves on to those -- or stops for something else, which is
+// left to the terminal.
+void ResolveWindow::continueRebase()
+{
+    if (m_continuing || !resolveUnsaved())
+        return;
+    m_continuing = new QProcess(this);
+    m_repo.configure(*m_continuing);
+    QProcessEnvironment env = m_continuing->processEnvironment();
+    env.insert(QStringLiteral("GIT_EDITOR"), QStringLiteral("true"));   // keep the commit's own message
+    m_continuing->setProcessEnvironment(env);
+    connect(m_continuing, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
+        const QString output = QString::fromUtf8(m_continuing->readAllStandardOutput() + m_continuing->readAllStandardError());
+        m_continuing->deleteLater();
+        m_continuing = nullptr;
+        m_operation = m_repo.operation();
+        if (m_operation != u"rebase") {
+            m_opText = tr("The rebase is finished.");
+            m_subtitle->setText(m_opText);
+            m_hintLabel->hide();
+            m_continueBtn->hide();
+            m_status->setText(tr("Rebase finished"));
+            m_message->setText(tr("The rebase is finished."));
+            m_stack->setCurrentIndex(2);
+            return;
+        }
+        if (!m_repo.unmerged().isEmpty()) {
+            // The next commit's conflicts: a fresh list, and sides named for it.
+            describeSides();
+            m_subtitle->setText(m_opText);
+            m_listed.clear();
+            m_resolved.clear();
+            m_path.clear();
+            m_status->setText(tr("Continued; the next commit has conflicts"));
+            refreshList();
+            return;
+        }
+        m_status->setText(tr("The rebase stopped"));
+        refreshList();
+        QMessageBox::information(this, tr("The rebase stopped"),
+                                 tr("git stopped for something other than a conflict; carry on in a terminal.\n\n")
+                                     + output.right(1500));
+    });
+    m_status->setText(tr("Continuing the rebase…"));
+    m_continueBtn->setEnabled(false);
+    m_continuing->start(QStringLiteral("git"), {QStringLiteral("rebase"), QStringLiteral("--continue")});
+    m_continuing->closeWriteChannel();
 }
 
 void ResolveWindow::updateActions()
