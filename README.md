@@ -14,8 +14,10 @@ cmake --build build -j
 cmake --install build
 ```
 
-That installs `~/.local/bin/og` and
-`~/.local/share/applications/omarchy-commit.desktop`, and needs no root.
+That installs `~/.local/bin/og`,
+`~/.local/share/applications/omarchy-commit.desktop` and its icon
+(`~/.local/share/icons/hicolor/scalable/apps/omarchy-commit.svg`), and needs no
+root.
 Drop the `CMAKE_INSTALL_PREFIX` line to install under `/usr/local` for every
 user on the machine instead (`cmake --install` then needs `sudo`).
 

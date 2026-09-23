@@ -20,9 +20,12 @@ add_executable(og
     src/LogWindow.cpp
     src/ResolveWindow.cpp
 )
+# The app icon, compiled in for the window icon (installed below for launchers).
+qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)
 target_link_libraries(og PRIVATE Qt6::Widgets)
 target_compile_definitions(og PRIVATE OG_VERSION="${PROJECT_VERSION}")
 
 include(GNUInstallDirs)
 install(TARGETS og RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES omarchy-commit.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES icons/omarchy-commit.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)

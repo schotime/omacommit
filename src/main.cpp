@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QIcon>
 #include <QHash>
 #include <QMessageBox>
 
@@ -62,6 +63,7 @@ int main(int argc, char *argv[])
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-commit"));   // Wayland app_id / Hyprland class
 
     QApplication app(argc, argv);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/omarchy-commit.svg")));
     QApplication::setStyle(new Style);   // Fusion, with og's checkboxes
 
     QStringList args = app.arguments();
