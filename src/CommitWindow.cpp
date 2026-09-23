@@ -634,6 +634,7 @@ void CommitWindow::applyFilter()
         auto *it = m_files->topLevelItem(i);
         it->setHidden(!f.isEmpty() && !it->text(0).contains(f, Qt::CaseInsensitive));
     }
+    updateSelectAllState();   // a filter matching nothing leaves it nothing to toggle
 }
 
 void CommitWindow::toggleAll()
@@ -666,6 +667,12 @@ void CommitWindow::updateSelectAllState()
     m_selectAll->setCheckState(checked == 0 ? Qt::Unchecked
                                : checked == total ? Qt::Checked
                                                   : Qt::PartiallyChecked);
+    // It toggles the rows on show, so with none showing -- nothing changed,
+    // or a filter matching nothing -- there is nothing for it to do.
+    bool anyShown = false;
+    for (int i = 0; i < total && !anyShown; ++i)
+        anyShown = !m_files->topLevelItem(i)->isHidden();
+    m_selectAll->setEnabled(!m_busy && anyShown);
 }
 
 // Returns false when the commit must not go ahead. The branch is created as a
@@ -933,7 +940,7 @@ void CommitWindow::setBusy(bool busy, const QString &message)
     m_files->setEnabled(!busy);
     m_amend->setEnabled(!busy);
     m_newBranch->setEnabled(!busy && !m_amend->isChecked());
-    m_selectAll->setEnabled(!busy);
+    updateSelectAllState();
     m_historyBtn->setEnabled(!busy);
     updateWriteButton();
     if (!message.isNull())
