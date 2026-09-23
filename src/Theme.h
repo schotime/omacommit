@@ -37,6 +37,9 @@ public:
 
     static QColor mix(const QColor &a, const QColor &b, qreal t);
     static double distance(const QColor &a, const QColor &b);   // perceptual (CIE76 ΔE)
+    // A name emphasised inside a label's rich text (a branch in a heading).
+    // Stylesheet classes don't reach into rich text, so the style lives here.
+    static QString strong(const QString &plain);
 
 signals:
     void changed();

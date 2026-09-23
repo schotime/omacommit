@@ -345,7 +345,7 @@ void ResolveWindow::describeSides()
         m_incShort = tr("theirs");
         m_incLong = tr("Theirs — %1").arg(other);
         m_canCommit = true;
-        m_opText = tr("Merging <span style=\"font-weight:600\">%1</span> into <span style=\"font-weight:600\">%2</span>").arg(other.toHtmlEscaped(), (branch.isEmpty() ? tr("HEAD") : branch).toHtmlEscaped());
+        m_opText = tr("Merging %1 into %2").arg(Theme::strong(other), Theme::strong(branch.isEmpty() ? tr("HEAD") : branch));
     } else if (m_operation == u"rebase") {
         QString onto, ontoSha;
         for (const char *dir : {"/rebase-merge/onto", "/rebase-apply/onto"}) {
@@ -369,19 +369,19 @@ void ResolveWindow::describeSides()
         m_incShort = tr("mine");
         m_incLong = replaying.isEmpty() ? tr("Mine — the commit being replayed") : tr("Mine — replaying %1").arg(replaying);
         m_hint = tr("Resolve every file, then continue the rebase to the next commit.");
-        m_opText = tr("Rebasing onto <span style=\"font-weight:600\">%1</span>").arg((onto.isEmpty() ? tr("HEAD") : onto).toHtmlEscaped());
+        m_opText = tr("Rebasing onto %1").arg(Theme::strong(onto.isEmpty() ? tr("HEAD") : onto));
     } else if (m_operation == u"cherry-pick") {
         const QString picked = describe(QStringLiteral("CHERRY_PICK_HEAD"));
         m_incShort = tr("picked");
         m_incLong = tr("Picked — %1").arg(picked);
         m_canCommit = true;
-        m_opText = tr("Cherry-picking <span style=\"font-weight:600\">%1</span>").arg(picked.toHtmlEscaped());
+        m_opText = tr("Cherry-picking %1").arg(Theme::strong(picked));
     } else if (m_operation == u"revert") {
         const QString reverted = describe(QStringLiteral("REVERT_HEAD"));
         m_incShort = tr("reverted");
         m_incLong = tr("Revert of %1").arg(reverted);
         m_canCommit = true;
-        m_opText = tr("Reverting <span style=\"font-weight:600\">%1</span>").arg(reverted.toHtmlEscaped());
+        m_opText = tr("Reverting %1").arg(Theme::strong(reverted));
     } else {
         m_curShort = tr("current");
         m_curLong = tr("Current — %1").arg(head);

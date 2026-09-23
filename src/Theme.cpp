@@ -61,6 +61,11 @@ double Theme::distance(const QColor &a, const QColor &b)
     return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
 }
 
+QString Theme::strong(const QString &plain)
+{
+    return QStringLiteral("<span style=\"font-weight:600\">%1</span>").arg(plain.toHtmlEscaped());
+}
+
 QColor Theme::mix(const QColor &a, const QColor &b, qreal t)
 {
     return QColor::fromRgbF(float(a.redF() * (1 - t) + b.redF() * t),
