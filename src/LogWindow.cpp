@@ -7,6 +7,7 @@
 
 #include <QCheckBox>
 #include <QDateTime>
+#include <QEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -183,6 +184,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_commits->setUniformRowHeights(true);
     m_commits->setSelectionMode(QAbstractItemView::SingleSelection);
     m_commits->setItemDelegateForColumn(0, new GraphDelegate(this));
+    m_commits->viewport()->installEventFilter(this);   // hide columns as it narrows
     m_commits->header()->setStretchLastSection(false);
     m_commits->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_commits->header()->setSectionResizeMode(1, QHeaderView::Interactive);
@@ -344,7 +346,10 @@ void LogWindow::loadMore()
         m_graph.push_back(m_layout.add(c.hash, c.parents));
         auto *it = new QTreeWidgetItem;
         it->setData(0, RowRole, row);
-        it->setToolTip(0, c.subject);
+        it->setToolTip(0, tr("%1\n\n%2 · %3 · %4")
+                              .arg(c.subject, c.author,
+                                   QDateTime::fromSecsSinceEpoch(c.time).toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                                   c.hash.left(8)));
         it->setText(1, c.author);
         it->setToolTip(1, c.email);
         it->setText(2, QDateTime::fromSecsSinceEpoch(c.time).toString(QStringLiteral("yyyy-MM-dd HH:mm")));
@@ -516,9 +521,40 @@ void LogWindow::sizeColumns()
     int hexWidth = 0;   // the UI font is proportional: size for the widest hex digit
     for (QChar ch : QStringLiteral("0123456789abcdef"))
         hexWidth = qMax(hexWidth, fm.horizontalAdvance(ch));
-    m_commits->setColumnWidth(1, fm.horizontalAdvance(QStringLiteral("Firstname Lastname")) + pad);
-    m_commits->setColumnWidth(2, fm.horizontalAdvance(QStringLiteral("2026-09-23 22:22")) + pad);
-    m_commits->setColumnWidth(3, hexWidth * 8 + pad);
+    m_colWidth[1] = fm.horizontalAdvance(QStringLiteral("Firstname Lastname")) + pad;
+    m_colWidth[2] = fm.horizontalAdvance(QStringLiteral("2026-09-23 22:22")) + pad;
+    m_colWidth[3] = hexWidth * 8 + pad;
+    for (int col = 1; col <= 3; ++col)
+        m_commits->setColumnWidth(col, m_colWidth[col]);
+    fitColumns();
+}
+
+// The subject is what the log is read for, so it gets the room: when it would
+// have less than ~55% of the table, Author goes, then Date, then the hash --
+// all three are still in the Commit panel and the subject's tooltip -- and
+// they come back as the table widens.
+void LogWindow::fitColumns()
+{
+    if (!m_colWidth[1])
+        return;
+    const int total = m_commits->viewport()->width();
+    const int minSubject = qMax(320, int(total * 0.55));
+    int used = 0;
+    for (int col = 1; col <= 3; ++col)
+        used += m_colWidth[col];
+    for (int col : {1, 2, 3}) {   // hide in this order until the subject has room
+        const bool hide = total - used < minSubject;
+        m_commits->header()->setSectionHidden(col, hide);
+        if (hide)
+            used -= m_colWidth[col];
+    }
+}
+
+bool LogWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_commits->viewport() && event->type() == QEvent::Resize)
+        fitColumns();
+    return QWidget::eventFilter(watched, event);
 }
 
 void LogWindow::applyTheme()

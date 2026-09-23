@@ -34,6 +34,8 @@ private:
     void revertCommit(const LogCommit &c);
     void applyTheme();
     void sizeColumns();
+    void fitColumns();
+    bool eventFilter(QObject *watched, QEvent *event) override;
     QString baseOf(const LogCommit &c) const;
     QColor statusColor(QChar status) const;
 
@@ -53,6 +55,7 @@ private:
     GraphLayout m_layout;
     QVector<FileEntry> m_commitFiles;
     QString m_shownCommit;
+    int m_colWidth[4] = {0, 0, 0, 0};   // what Author, Date and Commit need when shown
     bool m_exhausted = false;
     bool m_loading = false;
 };
