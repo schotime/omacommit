@@ -45,7 +45,8 @@ public:
     void setKinds(const QVector<Line> &lines);
     void setColors(const DiffColors &c);
     void setDualNumbers(bool dual);   // two line-number columns, for the inline view
-    void setShowWhitespace(bool show); // spaces as ·, tabs as →
+    void setShowWhitespace(bool show); // spaces as ·, tabs as →, in the muted colour
+    bool showsWhitespace() const { return m_showWs; }
 
     int gutterWidth() const;
     void paintGutter(QPaintEvent *e);
@@ -63,6 +64,7 @@ private:
     QVector<Line> m_lines;
     DiffColors m_c;
     bool m_dual = false;
+    bool m_showWs = false;
 };
 
 class DiffView : public QWidget {

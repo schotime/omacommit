@@ -211,11 +211,11 @@ bool DiffPane::viewportEvent(QEvent *e)
     return QPlainTextEdit::viewportEvent(e);
 }
 
+// Drawn by paintEvent rather than Qt's ShowTabsAndSpaces, which can only use
+// the text colour; the markers belong in the background, not the text.
 void DiffPane::setShowWhitespace(bool show)
 {
-    QTextOption opt = document()->defaultTextOption();
-    opt.setFlags(show ? opt.flags() | QTextOption::ShowTabsAndSpaces : opt.flags() & ~QTextOption::ShowTabsAndSpaces);
-    document()->setDefaultTextOption(opt);
+    m_showWs = show;
     viewport()->update();
 }
 
@@ -309,6 +309,33 @@ void DiffPane::paintEvent(QPaintEvent *e)
         }
     }
     QPlainTextEdit::paintEvent(e);
+
+    if (m_showWs) {   // · for each space, → across each tab, in the muted colour
+        QPainter p(viewport());
+        p.setFont(font());
+        p.setPen(m_c.gutterFg);
+        const QPointF off = contentOffset();
+        for (QTextBlock block = firstVisibleBlock(); block.isValid(); block = block.next()) {
+            const QRectF r = blockBoundingGeometry(block).translated(off);
+            if (r.top() > e->rect().bottom())
+                break;
+            QTextLayout *layout = block.layout();
+            if (!layout || layout->lineCount() == 0)
+                continue;
+            const QTextLine tl = layout->lineAt(0);
+            const qreal left = r.left() + layout->position().x();
+            const QString text = block.text();
+            for (int i = 0; i < text.size(); ++i) {
+                const QChar ch = text.at(i);
+                if (ch != u' ' && ch != u'\t')
+                    continue;
+                const qreal x1 = left + tl.cursorToX(i), x2 = left + tl.cursorToX(i + 1);
+                const QRectF cell(x1, r.top(), x2 - x1, tl.height());
+                p.drawText(cell, (ch == u' ' ? Qt::AlignCenter : Qt::AlignLeft | Qt::AlignVCenter),
+                           ch == u' ' ? QStringLiteral("·") : QStringLiteral("→"));
+            }
+        }
+    }
 }
 
 void DiffPane::paintGutter(QPaintEvent *e)
