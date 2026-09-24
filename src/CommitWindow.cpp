@@ -376,7 +376,21 @@ void CommitWindow::showCurrentDiff()
             m_diffCr = true;
             break;
         }
-    m_diff->showDiff(it->text(0), diff, editable);
+    // For an image: the base's version against the one on disk.
+    const QString before = base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
+    const QString onDiskPath = QDir(m_repo.root()).filePath(e.path);
+    const ImageFetch images = [this, before, onDiskPath] {
+        ImageSides s;
+        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+        s.hasBefore = b.ok();
+        s.before = b.out;
+        QFile f(onDiskPath);
+        s.hasAfter = f.open(QIODevice::ReadOnly);
+        if (s.hasAfter)
+            s.after = f.readAll();
+        return s;
+    };
+    m_diff->showDiff(it->text(0), diff, editable, images);
     // Git may show the file through filters (autocrlf, textconv, ...). If what
     // the pane shows is not what is on disk, saving it would rewrite the file
     // as something else, so leave it read-only.

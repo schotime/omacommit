@@ -428,7 +428,21 @@ void LogWindow::showFileDiff()
         return;
     const LogCommit &c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
-    m_diff->showDiff(fi->text(0), m_repo.diffBetween(baseOf(c), c.hash, f), false);
+    // For an image: the file in the parent (under its old name) and in the commit.
+    const QString before = baseOf(c) + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
+    const QString after = c.hash + QLatin1Char(':') + f.path;
+    const ImageFetch images = [this, before, after] {
+        auto blob = [this](const QString &rev, QByteArray *data) {
+            const GitResult r = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), rev});
+            *data = r.out;
+            return r.ok();
+        };
+        ImageSides s;
+        s.hasBefore = blob(before, &s.before);
+        s.hasAfter = blob(after, &s.after);
+        return s;
+    };
+    m_diff->showDiff(fi->text(0), m_repo.diffBetween(baseOf(c), c.hash, f), false, images);
 }
 
 void LogWindow::showCommitMenu(const QPoint &pos)

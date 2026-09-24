@@ -1,4 +1,5 @@
 #include "ResolveWindow.h"
+#include "ImageCompare.h"
 #include "CommitWindow.h"
 #include "DiffView.h"
 #include "ElidedLabel.h"
@@ -251,9 +252,12 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_wholeText->setAlignment(Qt::AlignCenter);
     m_wholeA = new QPushButton;
     m_wholeB = new QPushButton;
+    m_wholeImages = new ImageCompare;
+    m_wholeImages->hide();
     auto *wholePage = new QWidget;
     auto *wl = new QVBoxLayout(wholePage);
     wl->addStretch();
+    wl->addWidget(m_wholeImages, 8);
     wl->addWidget(m_wholeText);
     auto *wb = new QHBoxLayout;
     wb->addStretch();
@@ -624,13 +628,24 @@ void ResolveWindow::openText(const UnmergedFile &u)
 // The two sides, aligned against each other: yours on the right.
 void ResolveWindow::showSides()
 {
-    if (m_mineIsIncoming) {
-        m_top->showDiff(m_path, m_repo.diffFiles(m_curPath, m_incPath), false);
+    // An SVG can be looked at as a picture too.
+    const QString left = m_mineIsIncoming ? m_curPath : m_incPath;
+    const QString right = m_mineIsIncoming ? m_incPath : m_curPath;
+    const ImageFetch images = [left, right] {
+        ImageSides s;
+        QFile a(left), b(right);
+        s.hasBefore = a.open(QIODevice::ReadOnly);
+        s.before = a.readAll();
+        s.hasAfter = b.open(QIODevice::ReadOnly);
+        s.after = b.readAll();
+        return s;
+    };
+    // Captions first: the picture view labels its sides with them.
+    if (m_mineIsIncoming)
         m_top->setPaneCaptions(m_curLong, m_incLong);
-    } else {
-        m_top->showDiff(m_path, m_repo.diffFiles(m_incPath, m_curPath), false);
+    else
         m_top->setPaneCaptions(m_incLong, m_curLong);
-    }
+    m_top->showDiff(m_path, m_repo.diffFiles(left, right), false, images);
 }
 
 void ResolveWindow::openWholeFile(const UnmergedFile &u)
@@ -653,6 +668,19 @@ void ResolveWindow::openWholeFile(const UnmergedFile &u)
                                   QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes)
             finishWith({QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("--"), path});
     };
+
+    // An image: show both sides to choose between, yours on the right.
+    {
+        auto side = [this, &u](int stage, const QString &caption) {
+            const QByteArray data = u.has(stage)
+                ? m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), u.stage[stage]}).out
+                : QByteArray();
+            return ImageCompare::load(caption, data, u.has(stage));
+        };
+        const ImageCompare::Side inc = side(3, m_incLong), cur = side(2, m_curLong);
+        m_wholeImages->setSides(m_mineIsIncoming ? cur : inc, m_mineIsIncoming ? inc : cur);
+        m_wholeImages->setVisible(m_wholeImages->hasImage());
+    }
 
     if (u.has(2) && u.has(3)) {
         m_wholeText->setText(tr("%1 can't be merged line by line (it is binary, or not UTF-8 text).\n"

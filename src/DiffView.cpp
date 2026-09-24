@@ -1,5 +1,6 @@
 #include "DiffView.h"
 #include "GitRepo.h"
+#include "ImageCompare.h"
 #include "Theme.h"
 
 #include <QEvent>
@@ -432,6 +433,11 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
                                "whitespace rules (what git diff --check reports). Hover a red mark for details."));
     m_issueNote->hide();
 
+    // An SVG is text, so it opens as a diff; this switches to the picture.
+    m_imageBtn = new QToolButton;
+    m_imageBtn->hide();
+    m_svgAsImage = QSettings().value(QStringLiteral("diff/svgAsImage"), false).toBool();
+
     m_save = new QToolButton;
     m_save->setText(tr("Save"));
     m_save->setToolTip(tr("Write the edited file to disk (Ctrl+S)"));
@@ -505,6 +511,8 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_stack->addWidget(split);        // 0: side by side
     m_stack->addWidget(m_message);    // 1: a message instead of a diff
     m_stack->addWidget(inlinePage);   // 2: inline
+    m_image = new ImageCompare;
+    m_stack->addWidget(m_image);      // 3: an image's two versions
 
     auto *head = new QHBoxLayout;
     head->setContentsMargins(10, 6, 8, 6);
@@ -515,6 +523,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     head->addWidget(m_stats);
     head->addSpacing(10);
     head->addWidget(m_save);
+    head->addWidget(m_imageBtn);
     head->addWidget(m_optsBtn);
     head->addWidget(m_modeBtn);
     head->addWidget(m_prev);
@@ -544,7 +553,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     // A click always flips what you see: from the automatic inline fallback it
     // means side by side anyway (until there is room again).
     connect(m_modeBtn, &QToolButton::clicked, this, [this] {
-        if (m_stack->currentIndex() == 2) {
+        if (inlineWanted()) {   // not the page shown: images and messages have their own
             m_prefInline = false;
             m_forceSplit = m_narrow;
         } else {
@@ -553,6 +562,25 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
         }
         QSettings().setValue(QStringLiteral("diff/inline"), m_prefInline);
         updateMode();
+    });
+
+    connect(m_imageBtn, &QToolButton::clicked, this, [this] {
+        if (m_stack->currentIndex() == 3) {
+            m_svgAsImage = false;
+            QSettings().setValue(QStringLiteral("diff/svgAsImage"), false);
+            const QHash<int, QString> issues = m_issues;
+            const QString name = m_name;
+            const QByteArray text = m_textDiff;
+            const ImageFetch fetch = m_imageFetch;
+            showDiff(name, text, m_textEditable, fetch);
+            setWhitespaceIssues(issues);
+        } else if (!isDirty()) {
+            m_textEditable = m_wantEditable;   // as the owner left it after showDiff
+            m_svgAsImage = true;
+            QSettings().setValue(QStringLiteral("diff/svgAsImage"), true);
+            m_issues.clear();
+            showImages(m_name);
+        }
     });
 
     connect(m_wsShow, &QAction::toggled, this, [this](bool on) {
@@ -584,8 +612,18 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     updateMode();   // label the mode button
 }
 
-void DiffView::showDiff(const QString &title, const QByteArray &diff, bool editable)
+void DiffView::showDiff(const QString &title, const QByteArray &diff, bool editable, const ImageFetch &images)
 {
+    const ImageFetch fetch = images;   // may be m_imageFetch itself, which showMessage clears
+    const bool svg = fetch && title.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive);
+    if (svg && m_svgAsImage) {
+        m_imageFetch = fetch;
+        m_textDiff = diff;
+        m_textEditable = editable;
+        if (showImages(title))
+            return;
+    }
+
     // Re-showing the same file (after a refresh or a save) keeps the scroll
     // position instead of jumping back to the first change.
     const bool sameFile = showingRows() && title == m_name;
@@ -594,6 +632,9 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     m_issues.clear();
     bool binary = false;
     if (!rowsFromDiff(diff, {}, &binary)) {
+        m_imageFetch = fetch;
+        if (binary && fetch && showImages(title))
+            return;
         showMessage(title, binary                        ? tr("Binary file, no text diff")
                            : GitRepo::ignoreWhitespace() ? tr("Only whitespace changed (whitespace is being ignored)")
                                                          : tr("No content changes"));
@@ -611,6 +652,9 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
 
     m_current = -1;
     updateNav();
+    m_imageFetch = fetch;
+    m_textDiff = diff;
+    updateImageButton();
     QTimer::singleShot(0, this, [this, sameFile, keepScroll] {   // after layout, so the viewport height is known
         if (sameFile)
             activeScrollBar()->setValue(keepScroll);
@@ -643,8 +687,48 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_changeStarts.clear();
     m_current = -1;
     m_removed = m_added = 0;
+    m_imageFetch = nullptr;
+    m_textDiff.clear();
     setEditable(false);
     updateNav();
+}
+
+// The file's two versions as pictures, when at least one of them is an image.
+bool DiffView::showImages(const QString &title)
+{
+    const ImageFetch fetch = m_imageFetch;
+    const QByteArray textDiff = m_textDiff;
+    if (!fetch)
+        return false;
+    const ImageSides sides = fetch();
+    const QString leftName = m_leftCaption->text().isEmpty() ? tr("Before") : m_leftCaption->text();
+    const QString rightName = m_rightCaption->text().isEmpty() ? tr("After") : m_rightCaption->text();
+    const ImageCompare::Side left = ImageCompare::load(leftName, sides.before, sides.hasBefore);
+    const ImageCompare::Side right = ImageCompare::load(rightName, sides.after, sides.hasAfter);
+    if (left.image.isNull() && right.image.isNull())
+        return false;
+    showMessage(title, {});
+    m_imageFetch = fetch;
+    m_textDiff = textDiff;
+    m_image->setSides(left, right);
+    m_image->setStacked(inlineWanted());
+    m_stack->setCurrentIndex(3);
+    updateImageButton();
+    return true;
+}
+
+// Shown for an SVG only: its text and its picture are both worth seeing.
+void DiffView::updateImageButton()
+{
+    const bool onImage = m_stack->currentIndex() == 3;
+    const bool svg = m_imageFetch && m_name.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive);
+    m_imageBtn->setVisible(svg && (onImage || showingRows()));
+    m_imageBtn->setText(onImage ? tr("Source") : tr("Picture"));
+    m_imageBtn->setToolTip(onImage ? tr("Show the SVG's source as a diff") : tr("Show the SVG as a picture"));
+    const bool dirty = isDirty();
+    m_imageBtn->setEnabled(onImage || !dirty);
+    if (!onImage && dirty)
+        m_imageBtn->setToolTip(tr("Save or discard your edits first"));
 }
 
 // Parses a unified diff into the panes. When the diff has no hunks -- the
@@ -804,6 +888,7 @@ void DiffView::updateHeader()
     m_save->setVisible(dirty);
     m_wsIgnore->setEnabled(!dirty);
     m_wsIgnore->setToolTip(dirty ? tr("Save or discard your edits first") : QString());
+    updateImageButton();
 }
 
 bool DiffView::isChanged(int row) const
@@ -1198,6 +1283,7 @@ void DiffView::updateMode()
                                          "Click for side by side anyway.")
                           : inl     ? tr("Inline (read-only). Click for side by side.")
                                     : tr("Side by side. Click for inline."));
+    m_image->setStacked(inl);   // images: one above the other instead of inline
     if (!showingRows() || (m_stack->currentIndex() == 2) == inl)
         return;
     const int topLine = activeScrollBar()->value();

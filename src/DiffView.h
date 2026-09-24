@@ -9,6 +9,7 @@
 
 #include <functional>
 
+class ImageCompare;
 class QLabel;
 class QScrollBar;
 class QStackedWidget;
@@ -67,6 +68,14 @@ private:
     bool m_showWs = false;
 };
 
+// The two versions of a file, as bytes, for showing it as an image. A side
+// that does not exist (a new or deleted file) has `has...` false.
+struct ImageSides {
+    QByteArray before, after;
+    bool hasBefore = true, hasAfter = true;
+};
+using ImageFetch = std::function<ImageSides()>;
+
 class DiffView : public QWidget {
 public:
     // TortoiseGitMerge's "use ..." actions. Left is HEAD and right is the file,
@@ -86,7 +95,11 @@ public:
     // Marks whitespace problems on the right side, keyed by its 1-based line.
     void setWhitespaceIssues(const QHash<int, QString> &byLine);
 
-    void showDiff(const QString &title, const QByteArray &unifiedDiff, bool editable = false);
+    // `images` fetches the two versions, only when they are needed: a binary
+    // diff is shown as images when either side is one, and an SVG gets a
+    // button to switch between its text and the picture.
+    void showDiff(const QString &title, const QByteArray &unifiedDiff, bool editable = false,
+                  const ImageFetch &images = {});
     void showMessage(const QString &title, const QString &message);
     void applyTheme();
 
@@ -125,6 +138,8 @@ private:
     void setRows(const QVector<DiffPane::Line> &left, const QVector<DiffPane::Line> &right);
     // Side by side or inline: the rows are the same, only the drawing differs.
     bool showingRows() const;
+    bool showImages(const QString &title);
+    void updateImageButton();
     void applyIssues();
     bool inlineWanted() const;
     void buildInline();
@@ -147,6 +162,12 @@ private:
     DiffPane *m_right;
     DiffPane *m_inline;
     QLabel *m_inlineCaption;
+    ImageCompare *m_image;
+    QToolButton *m_imageBtn;
+    ImageFetch m_imageFetch;
+    QByteArray m_textDiff;         // an SVG's diff, to switch back to from its picture
+    bool m_textEditable = false;
+    bool m_svgAsImage = false;     // remembered
     QToolButton *m_modeBtn;
     QToolButton *m_optsBtn;
     QAction *m_wsShow;

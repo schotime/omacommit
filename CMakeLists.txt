@@ -15,6 +15,7 @@ add_executable(og
     src/Theme.cpp
     src/MessageEdit.cpp
     src/DiffView.cpp
+    src/ImageCompare.cpp
     src/CommitWindow.cpp
     src/LogGraph.cpp
     src/LogWindow.cpp

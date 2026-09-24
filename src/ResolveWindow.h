@@ -8,6 +8,7 @@
 
 #include <memory>
 
+class ImageCompare;
 class DiffPane;
 class DiffView;
 class QLabel;
@@ -95,6 +96,7 @@ private:
     QPushButton *m_saveBtn;
     QPushButton *m_resolvedBtn;
     QLabel *m_wholeText;
+    ImageCompare *m_wholeImages;   // the two sides, when the file is an image
     QPushButton *m_wholeA;
     QPushButton *m_wholeB;
     QLabel *m_message;

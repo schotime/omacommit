@@ -89,6 +89,13 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   two readable sides it shows inline anyway, with the icon in the accent colour —
   click it for side by side regardless. Inline is read-only: typing needs the two
   sides, but the right-click *Use left …* actions still work.
+- **Images are shown as pictures** — PNG, JPEG, GIF, WebP and whatever else Qt
+  can read — before and after side by side (one above the other in inline mode),
+  over a checkerboard so transparency shows, fitted but never enlarged, with
+  each version's size in pixels and bytes. A new or deleted image shows the one
+  side it has. An SVG opens as its text diff, with a *Picture* / *Source*
+  button to switch (remembered). In `og resolve`, a conflicted image shows both
+  sides above the buttons that pick one.
 - **Whitespace** (the ⋯ button, remembered, in every window): *Show whitespace*
   draws spaces as `·` and tabs as `→`; *Ignore whitespace changes* hides changes
   that only add, remove or re-indent whitespace (`git diff -w`), with a
