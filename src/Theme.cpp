@@ -228,6 +228,18 @@ void Theme::load()
 
 void Theme::loadFont()
 {
+#ifdef Q_OS_WIN
+    // A named Windows monospace face avoids Qt's generic "monospace" family
+    // resolving to a proportional font in stylesheet-backed text editors.
+    const QStringList families = QFontDatabase::families();
+    const QString family = families.contains(QStringLiteral("Consolas")) ? QStringLiteral("Consolas")
+                         : families.contains(QStringLiteral("Cascadia Mono")) ? QStringLiteral("Cascadia Mono")
+                         : QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+    m_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    m_font.setFamily(family);
+    m_font.setStyleHint(QFont::Monospace);
+    m_font.setFixedPitch(true);
+#else
     QString family = QStringLiteral("JetBrainsMono Nerd Font");
     const QString tool = QStandardPaths::findExecutable(QStringLiteral("omarchy-font-current"));
     if (!tool.isEmpty()) {
@@ -243,6 +255,7 @@ void Theme::loadFont()
     m_font.setPointSizeF(10.5);
     m_font.setStyleHint(QFont::Monospace);
     m_font.setFixedPitch(true);
+#endif
     m_fontLoaded = true;
 }
 
@@ -269,7 +282,11 @@ void Theme::watch()
 
 void Theme::apply()
 {
+#ifdef Q_OS_WIN
+    qApp->setFont(QFontDatabase::systemFont(QFontDatabase::GeneralFont));
+#else
     qApp->setFont(m_font);
+#endif
     qApp->setPalette(palette());
     qApp->setStyleSheet(styleSheet());
 }
@@ -334,6 +351,7 @@ QHeaderView::section {
 }
 QPushButton, QToolButton { background: @surface@; border: 1px solid @border@; padding: 6px 14px; }
 QToolButton { padding: 3px 9px; }
+QToolButton#agentPicker { padding: 2px 3px; }
 QToolButton::menu-indicator { image: none; width: 0; }
 QPushButton:hover, QToolButton:hover { border-color: @accent@; }
 QPushButton:pressed, QToolButton:pressed { background: @hover@; }
@@ -376,13 +394,21 @@ QAbstractScrollArea::corner { background: @bg@; }
     css.replace(QStringLiteral("@accentEdge@"), rgba(c.accent, 0.75));
 
     // Fonts go in the stylesheet: with one set, Qt gives lists and labels the
-    // desktop's font over the app font. The desktop's sizes, scaled down --
-    // they're sized for reading, og is dense: at 11pt, UI text 10pt, code 9pt.
+    // desktop's font over the app font.
     auto pt = [](qreal size) { return QString::number(std::round(size * 2) / 2); };
-    auto scaled = [](const QFont &f, qreal at11) { return (f.pointSizeF() > 0 ? f.pointSizeF() : 11) * at11 / 11; };
     const QFont ui = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+#ifdef Q_OS_WIN
+    // Windows system fonts are already sized for dense UI. Scaling them as we
+    // do Omarchy's 11pt desktop font makes 9pt Windows text noticeably tiny.
+    const qreal uiSize = ui.pointSizeF() > 0 ? ui.pointSizeF() : 9;
+    const qreal codeSize = m_font.pointSizeF() > 0 ? m_font.pointSizeF() : uiSize;
+#else
+    // Omarchy's desktop fonts are sized for reading; og is denser: at 11pt,
+    // UI text is 10pt and code is 9pt. Keep Linux's existing sizing.
+    auto scaled = [](const QFont &f, qreal at11) { return (f.pointSizeF() > 0 ? f.pointSizeF() : 11) * at11 / 11; };
     const qreal uiSize = scaled(ui, 10);
     const qreal codeSize = scaled(QFontDatabase::systemFont(QFontDatabase::FixedFont), 9);
+#endif
     css.replace(QStringLiteral("@uiFamily@"), ui.family());
     css.replace(QStringLiteral("@uiSize@"), pt(uiSize));
     css.replace(QStringLiteral("@codeFamily@"), m_font.family());

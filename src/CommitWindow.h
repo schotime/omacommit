@@ -87,7 +87,9 @@ private:
     QLabel *m_repoPath;
     QToolButton *m_historyBtn;
     QToolButton *m_writeBtn;
+    QToolButton *m_agentMenuBtn = nullptr;
     Agent m_agent;
+    QVector<Agent> m_agents;
     QProcess *m_writer = nullptr;   // the agent writing a message, while it runs
     bool m_writeStopped = false;
     QMenu *m_historyMenu;
@@ -113,6 +115,7 @@ private:
     QByteArray m_diffLoaded;
     QByteArray m_diffBase;
     bool m_diffCr = false;   // git's own diff saw CRLF on the file's side
+    int m_diffRequest = 0;   // discard background results for an older selection
     // Whitespace checking for the shown file: its rules and the base version
     // its added lines are measured against.
     WhitespaceRules m_wsRules;

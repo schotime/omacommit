@@ -37,6 +37,11 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcessEnvironment>
+#include <QPointer>
+#include <QThreadPool>
 
 #include <algorithm>
 #include <climits>
@@ -65,11 +70,31 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
 
-    // Writes a message with Omarchy's default coding agent (Claude Code or Codex).
-    m_agent = Agent::detect();
+    // Prefer Omarchy's default, then other agents installed on PATH.
+    m_agents = Agent::available();
+    if (!m_agents.isEmpty())
+        m_agent = m_agents.first();
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
-    m_writeBtn->setVisible(!m_agent.id.isEmpty());
+    m_writeBtn->setVisible(!m_agents.isEmpty());
+    if (m_agents.size() > 1) {
+        auto *menu = new QMenu(m_writeBtn);
+        for (const Agent &a : m_agents) {
+            auto *choice = menu->addAction(a.name);
+            choice->setCheckable(true);
+            connect(choice, &QAction::triggered, this, [this, a] {
+                m_agent = a;
+                updateWriteButton();
+            });
+        }
+        auto *chooseAgent = new QToolButton;
+        chooseAgent->setText(tr("▾"));
+        chooseAgent->setObjectName(QStringLiteral("agentPicker"));
+        chooseAgent->setFixedWidth(26);
+        chooseAgent->setMenu(menu);
+        chooseAgent->setPopupMode(QToolButton::InstantPopup);
+        m_agentMenuBtn = chooseAgent;
+    }
 
     m_historyBtn = new QToolButton;
     m_historyBtn->setText(tr("Recent ▾"));
@@ -148,6 +173,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     msgHead->addWidget(sectionLabel(tr("Message")));
     msgHead->addStretch();
     msgHead->addWidget(m_writeBtn);
+    if (m_agentMenuBtn)
+        msgHead->addWidget(m_agentMenuBtn);
     msgHead->addWidget(m_historyBtn);
     l->addLayout(msgHead);
     l->addWidget(m_message, 2);
@@ -431,6 +458,9 @@ void CommitWindow::showCurrentDiff()
         }
     }
 
+    // Whatever is still loading for an earlier selection is dropped when it arrives.
+    const int request = ++m_diffRequest;
+    const bool sameFile = entry && entry->path == m_diffPath && entry->staged == m_diffStaged;
     m_diffLoaded.clear();
     m_diffBase.clear();
     m_wsBase.clear();
@@ -445,95 +475,114 @@ void CommitWindow::showCurrentDiff()
     m_diffPath = e.path;
     m_diff->setFileName(e.path);   // the language for syntax colours
     m_diffStaged = e.staged;
-    m_wsRules = m_repo.whitespaceRules(e.path);
-    const QString diskPath = QDir(m_repo.root()).filePath(e.path);
-    auto readDisk = [diskPath](bool *ok = nullptr) {
-        QFile f(diskPath);
-        const bool opened = f.open(QIODevice::ReadOnly);
-        if (ok)
-            *ok = opened;
-        return opened ? f.readAll() : QByteArray();
-    };
-    bool inIndex = false;
-    const QByteArray index = m_repo.indexBlob(e.path, &inIndex);
-    m_shownIndex = index;
 
-    if (e.staged) {
-        // What is staged, against what the commit builds on. Read-only: the
-        // index is changed a block or a file at a time, not by typing.
-        const QString before = diffBase() + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
-        const ImageFetch images = [this, before, index, inIndex] {
-            ImageSides s;
-            const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
-            s.hasBefore = b.ok();
-            s.before = b.out;
-            s.hasAfter = inIndex;
-            s.after = index;
-            return s;
-        };
-        m_diff->setPaneCaptions(m_amend->isChecked() ? tr("Parent of the last commit") : tr("Last commit"),
-                                tr("Staged"));
-        m_diff->showDiff(it->text(0) + tr("  (staged)"), m_repo.diffStaged(e, diffBase()), false, images);
-        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
-        if (b.ok())
-            m_wsBase = b.out;
-        flagWhitespace(index);
-        if (inIndex && isUtf8(index) && isUtf8(m_wsBase))
-            m_diff->setLineActions(tr("Unstage"), [this](const DiffView::Selection &s) { unstageLines(s); });
-        return;
-    }
-
-    // What is not staged yet: the working tree against the index (for an
-    // untracked file, against nothing).
-    bool editable = canEditInDiff(e);
-    if (editable) {
-        bool ok = false;
-        m_diffLoaded = readDisk(&ok);
-        // Lines are written back as UTF-8, which would mangle anything else.
-        editable = ok && isUtf8(m_diffLoaded) && !m_diffLoaded.startsWith("\xEF\xBB\xBF");
-    }
-    m_diffBase = index;   // what the left side is, and what edits are re-diffed against
-    const QByteArray diff = m_repo.diffUnstaged(e);
-    // Whether git's diff kept the CRs (it drops them when core.autocrlf
-    // normalises the file). Re-diffs of edits must see the file the same way,
-    // or one keystroke would turn every line of a CRLF file into a change.
-    m_diffCr = false;
-    for (const QByteArray &line : diff.split('\n'))
-        if ((line.startsWith('+') || line.startsWith(' ')) && !line.startsWith("+++") && line.endsWith('\r')) {
-            m_diffCr = true;
-            break;
-        }
-    const ImageFetch images = [index, inIndex, readDisk] {
-        ImageSides s;
-        s.hasBefore = inIndex;
-        s.before = index;
-        s.after = readDisk(&s.hasAfter);
-        return s;
-    };
-    // The left side is the index's copy. For a file with staged changes that
-    // is not the last commit, which is worth saying: the staged part doesn't
-    // show here.
+    // Decided here, where the list is; the git work happens on a worker thread
+    // so a slow git (Windows, a big repository) doesn't freeze the window.
+    const QString title = it->text(0);
+    const QString base = diffBase();
+    const bool amend = m_amend->isChecked();
+    const bool mayEdit = canEditInDiff(e);
+    // For a file with staged changes the unstaged diff's left side is what's
+    // staged, not the last commit -- worth saying, as the staged part doesn't
+    // show there.
     bool partlyStaged = false;
     for (const FileEntry &s : m_entries)
-        if (s.staged && s.path == e.path && (!m_amend->isChecked() || m_indexChanged.contains(e.path)))
+        if (s.staged && s.path == e.path && (!amend || m_indexChanged.contains(e.path)))
             partlyStaged = true;
-    m_diff->setPaneCaptions(e.untracked() ? tr("Not in git yet") : partlyStaged ? tr("Staged") : tr("Last commit"),
-                            tr("Working tree"));
-    m_diff->showDiff(partlyStaged ? it->text(0) + tr("  (unstaged changes: against what's staged)") : it->text(0),
-                     diff, editable, images);
-    // Git may show the file through filters (autocrlf, textconv, ...). If what
-    // the pane shows is not what is on disk, saving it would rewrite the file
-    // as something else, so leave it read-only -- and don't stage from it.
-    const bool faithful = m_diff->rightLines() == DiffView::linesOf(m_diffLoaded);
-    if (editable && !faithful)
-        m_diff->setEditable(false);
+    if (!sameFile)   // re-showing the same file keeps it on screen, and its scroll position
+        m_diff->showMessage(title, tr("Loading diff…"));
 
-    // Whitespace problems on the lines staging this would add.
-    m_wsBase = index;
-    const QByteArray onDisk = m_diffLoaded.isEmpty() ? readDisk() : m_diffLoaded;
-    flagWhitespace(onDisk);
-    if (editable && faithful && isUtf8(index))
-        m_diff->setLineActions(tr("Stage"), [this](const DiffView::Selection &s) { stageLines(s); });
+    struct Loaded {
+        WhitespaceRules rules;
+        QByteArray index, before, onDisk, diff;
+        bool inIndex = false, hasBefore = false, onDiskOk = false, diffCr = false;
+        QHash<int, QString> issues;
+    };
+    const GitRepo repo = m_repo;
+    QPointer<CommitWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, request, e, base, title, amend, mayEdit, partlyStaged] {
+        Loaded d;
+        d.rules = repo.whitespaceRules(e.path);
+        d.index = repo.indexBlob(e.path, &d.inIndex);
+        if (e.staged) {
+            // What is staged, against what the commit builds on.
+            const GitResult b = repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
+                                          base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath)});
+            d.hasBefore = b.ok();
+            d.before = b.out;
+            d.diff = repo.diffStaged(e, base);
+            d.issues = repo.whitespaceIssues(d.rules, d.before, d.index);
+        } else {
+            // What is not staged yet: the working tree against the index (for
+            // an untracked file, against nothing).
+            QFile f(QDir(repo.root()).filePath(e.path));
+            d.onDiskOk = f.open(QIODevice::ReadOnly);
+            d.onDisk = d.onDiskOk ? f.readAll() : QByteArray();
+            d.diff = repo.diffUnstaged(e);
+            // Whether git's diff kept the CRs (it drops them when core.autocrlf
+            // normalises the file). Re-diffs of edits must see the file the same
+            // way, or one keystroke would turn every line of a CRLF file into a change.
+            for (const QByteArray &line : d.diff.split('\n'))
+                if ((line.startsWith('+') || line.startsWith(' ')) && !line.startsWith("+++") && line.endsWith('\r')) {
+                    d.diffCr = true;
+                    break;
+                }
+            d.issues = repo.whitespaceIssues(d.rules, d.index, d.onDisk);
+        }
+        QMetaObject::invokeMethod(qApp, [self, request, e, title, amend, mayEdit, partlyStaged, d] {
+            if (!self || request != self->m_diffRequest)
+                return;   // gone, or another file was picked meanwhile
+            CommitWindow *w = self;
+            w->m_wsRules = d.rules;
+            w->m_shownIndex = d.index;
+            if (e.staged) {
+                // Read-only: the index is changed a block or a line at a time, not by typing.
+                w->m_wsBase = d.hasBefore ? d.before : QByteArray();
+                const ImageFetch images = [d] {
+                    ImageSides s;
+                    s.hasBefore = d.hasBefore;
+                    s.before = d.before;
+                    s.hasAfter = d.inIndex;
+                    s.after = d.index;
+                    return s;
+                };
+                w->m_diff->setPaneCaptions(amend ? tr("Parent of the last commit") : tr("Last commit"), tr("Staged"));
+                w->m_diff->showDiff(title + tr("  (staged)"), d.diff, false, images);
+                w->m_diff->setWhitespaceIssues(d.issues);
+                if (d.inIndex && isUtf8(d.index) && isUtf8(w->m_wsBase))
+                    w->m_diff->setLineActions(tr("Unstage"), [w](const DiffView::Selection &s) { w->unstageLines(s); });
+                return;
+            }
+            // Lines are written back as UTF-8, which would mangle anything else.
+            const bool editable = mayEdit && d.onDiskOk && isUtf8(d.onDisk) && !d.onDisk.startsWith("\xEF\xBB\xBF");
+            w->m_diffLoaded = editable ? d.onDisk : QByteArray();
+            w->m_diffBase = d.index;   // what the left side is, and what edits are re-diffed against
+            w->m_diffCr = d.diffCr;
+            w->m_wsBase = d.index;
+            const ImageFetch images = [d] {
+                ImageSides s;
+                s.hasBefore = d.inIndex;
+                s.before = d.index;
+                s.hasAfter = d.onDiskOk;
+                s.after = d.onDisk;
+                return s;
+            };
+            w->m_diff->setPaneCaptions(e.untracked() ? tr("Not in git yet") : partlyStaged ? tr("Staged") : tr("Last commit"),
+                                       tr("Working tree"));
+            w->m_diff->showDiff(partlyStaged ? title + tr("  (unstaged changes: against what's staged)") : title,
+                                d.diff, editable, images);
+            // Git may show the file through filters (autocrlf, textconv, ...). If
+            // what the pane shows is not what is on disk, saving it would rewrite
+            // the file as something else, so leave it read-only -- and don't
+            // stage from it.
+            const bool faithful = w->m_diff->rightLines() == DiffView::linesOf(w->m_diffLoaded);
+            if (editable && !faithful)
+                w->m_diff->setEditable(false);
+            w->m_diff->setWhitespaceIssues(d.issues);   // on the lines staging this would add
+            if (editable && faithful && isUtf8(d.index))
+                w->m_diff->setLineActions(tr("Stage"), [w](const DiffView::Selection &s) { w->stageLines(s); });
+        }, Qt::QueuedConnection);
+    });
 }
 
 void CommitWindow::flagWhitespace(const QByteArray &text)
@@ -1245,18 +1294,23 @@ void CommitWindow::updateWriteButton()
         m_writeBtn->setText(tr("■ Stop"));
         m_writeBtn->setToolTip(tr("Stop %1").arg(m_agent.name));
         m_writeBtn->setEnabled(true);
+        if (m_agentMenuBtn)
+            m_agentMenuBtn->setEnabled(false);
         return;
     }
-    m_writeBtn->setText(tr("✨ Write"));
+    m_writeBtn->setText(tr("✨ Write · %1").arg(m_agent.name));
     m_writeBtn->setEnabled(!m_busy && m_agent.usable());
+    if (m_agentMenuBtn) {
+        m_agentMenuBtn->setEnabled(!m_busy);
+        m_agentMenuBtn->setToolTip(tr("Agent: %1 — choose another").arg(m_agent.name));
+        for (QAction *choice : m_agentMenuBtn->menu()->actions())
+            choice->setChecked(choice->text() == m_agent.name);
+    }
     if (m_agent.usable())
-        m_writeBtn->setToolTip(tr("Write a commit message for the checked changes with %1, your default agent.\n"
+        m_writeBtn->setToolTip(tr("Write a commit message for the checked changes with %1.\n"
                                   "Sends their diff to it; nothing is sent until you click.").arg(m_agent.name));
-    else if (!m_agent.supported)
-        m_writeBtn->setToolTip(tr("Writing messages works with Claude Code or Codex; your default agent is %1.\n"
-                                  "Change it with: omarchy default agent claude").arg(m_agent.name));
     else
-        m_writeBtn->setToolTip(tr("%1 isn't installed yet. Open it once with: omarchy agent").arg(m_agent.name));
+        m_writeBtn->setToolTip(tr("Install Claude Code, Codex or OpenCode on PATH to write messages."));
 }
 
 // What the agent is asked: the checked changes as they will be committed --
@@ -1348,10 +1402,25 @@ void CommitWindow::writeMessage()
         m_tmp = std::make_unique<QTemporaryDir>();
     const QString replyFile = m_tmp->filePath(QStringLiteral("reply"));
     QFile::remove(replyFile);
+    if (m_agent.id == u"opencode") {
+        QFile promptFile(replyFile);
+        if (!promptFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            promptFile.write(prompt.toUtf8()) != prompt.toUtf8().size()) {
+            showError(tr("Could not prepare the prompt for OpenCode"), promptFile.errorString());
+            return;
+        }
+        promptFile.close();
+    }
 
     m_writeStopped = false;
     m_writer = new QProcess(this);
     m_writer->setWorkingDirectory(m_repo.root());
+    if (m_agent.id == u"opencode") {
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("OPENCODE_PERMISSION"), QStringLiteral("{\"*\":\"deny\"}"));
+        env.insert(QStringLiteral("OPENCODE_DISABLE_DEFAULT_PLUGINS"), QStringLiteral("true"));
+        m_writer->setProcessEnvironment(env);
+    }
     auto *limit = new QTimer(m_writer);   // a stuck agent shouldn't hold the dialog forever
     limit->setSingleShot(true);
     connect(limit, &QTimer::timeout, m_writer, &QProcess::kill);
@@ -1362,6 +1431,17 @@ void CommitWindow::writeMessage()
         QString reply = m_agent.replyInFile()
             ? [&] { QFile f(replyFile); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); }()
             : QString::fromUtf8(m_writer->readAllStandardOutput());
+        if (m_agent.id == u"opencode") {
+            QString text;
+            for (const QByteArray &line : reply.toUtf8().split('\n')) {
+                const QJsonDocument event = QJsonDocument::fromJson(line);
+                if (!event.isObject() || event.object().value(QStringLiteral("type")).toString() != u"text")
+                    continue;
+                const QJsonObject part = event.object().value(QStringLiteral("part")).toObject();
+                text += part.value(QStringLiteral("text")).toString();
+            }
+            reply = text;
+        }
         const QString err = QString::fromUtf8(m_writer->readAllStandardError()).trimmed();
         m_writer->deleteLater();
         m_writer = nullptr;
@@ -1411,7 +1491,8 @@ void CommitWindow::writeMessage()
     m_message->setReadOnly(true);
     m_status->setText(tr("Writing a message with %1…").arg(m_agent.name));
     m_writer->start(m_agent.program(), m_agent.arguments(replyFile));
-    m_writer->write(prompt.toUtf8());
+    if (m_agent.id != u"opencode")
+        m_writer->write(prompt.toUtf8());
     m_writer->closeWriteChannel();
     updateWriteButton();
     updateCounts();
