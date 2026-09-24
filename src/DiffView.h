@@ -22,6 +22,8 @@ struct DiffColors {
     QColor removed, removedStrong, added, addedStrong, empty;
     QColor mine, theirs, marker, base;   // conflict sections, in the resolve window
     QColor issue;                        // whitespace problems on added lines
+    QColor frame, frameIdle;             // resolve: the current conflict's frame, the others'
+    QColor automatic;                    // resolve: differences git merged by itself
 };
 
 // One side of the side-by-side diff: read-only editor with a line-number
@@ -39,6 +41,16 @@ public:
         int number2 = -1;   // inline view: the new side's line number (number is the old side's)
         QString issue;      // whitespace problem git would report on this line, if any
     };
+
+    // Numbered frames around runs of lines -- the conflicts, in the resolve
+    // window. With `muteOthers`, changed lines outside every frame are drawn
+    // as merged automatically rather than as changes.
+    struct Group {
+        int first = -1, last = -1;   // lines, inclusive
+        int number = 0;
+        bool current = false, done = false;
+    };
+    void setGroups(const QVector<Group> &groups, bool muteOthers);
 
     explicit DiffPane(QWidget *parent = nullptr);
     void setLines(const QVector<Line> &lines);
@@ -64,8 +76,13 @@ private:
     void updateGutterWidth();
     void updateGutter(const QRect &rect, int dy);
 
+    void paintGroups(QPainter &p, const QRect &area);
+    const Group *groupAt(int line) const;
+
     QWidget *m_gutter;
     QVector<Line> m_lines;
+    QVector<Group> m_groups;
+    bool m_muteOthers = false;
     DiffColors m_c;
     bool m_dual = false;
     bool m_showWs = false;
@@ -113,6 +130,14 @@ public:
     // Resolve window: a caption over each pane, tints instead of red/green,
     // and no Alt+Up/Down (the window uses them to move between conflicts).
     void setPaneCaptions(const QString &left, const QString &right);
+    // Resolve window: the conflicts as runs of aligned rows, framed and
+    // numbered in both panes, with differences outside them drawn as merged
+    // automatically. Empty clears it.
+    void setConflictRows(const QVector<DiffPane::Group> &groups);
+    // Resolve window: its own actions at the top of the panes' menu (inserted
+    // before `before`), and clicks on a row of the left or right pane.
+    std::function<void(QMenu *menu, QAction *before, int row, bool right)> extendMenu;
+    std::function<void(int row, bool right, bool doubleClick)> onRowClicked;
     void setSideTints(const QColor &left, const QColor &right);
     void setNavShortcutsEnabled(bool enabled);
     int rowForLine(bool right, int lineNumber) const;
@@ -167,6 +192,7 @@ private:
     void applyIssues();
     bool inlineWanted() const;
     void buildInline();
+    void applyConflictRows();
     void updateMode();
     void updateNarrow();
     QScrollBar *activeScrollBar() const;
@@ -214,6 +240,7 @@ private:
     Selection blockAt(int row) const;
     Selection pickedLines(DiffPane *pane, int paneLine) const;   // paneLine: the pane's own line under the pointer
 
+    QVector<DiffPane::Group> m_conflictRows;
     QString m_lineVerb;
     std::function<void(const Selection &)> m_lineAction;
 

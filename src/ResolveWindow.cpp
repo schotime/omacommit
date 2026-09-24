@@ -156,6 +156,23 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     // --- right, page 0: the two sides over the merged file
     m_top = new DiffView;
     m_top->setNavShortcutsEnabled(false);
+    // The conflicts can be picked right where the two sides are shown: a click
+    // makes one current, a double-click takes that side, and right-click
+    // offers every way.
+    m_top->extendMenu = [this](QMenu *menu, QAction *before, int row, bool right) {
+        extendSidesMenu(menu, before, row, right);
+    };
+    m_top->onRowClicked = [this](int row, bool right, bool doubleClick) {
+        const int k = m_originalOf.indexOf(originalAtRow(row));
+        if (k < 0)
+            return;
+        if (!doubleClick)
+            gotoConflict(k, false);
+        else if (right == true)   // the right pane is always yours
+            pick(m_mineIsIncoming ? Pick::Incoming : Pick::Current, k);
+        else
+            pick(m_mineIsIncoming ? Pick::Current : Pick::Incoming, k);
+    };
     // Whitespace settings: the sides are diffed again; the merged file only
     // changes how it is drawn, so edits in it are never reset.
     m_top->onOptionsChanged = [this] {
@@ -218,6 +235,9 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     // in place. Save and Mark resolved stay together on the right.
     auto *picks = new QWidget;
     auto *pickFlow = new FlowLayout(picks);
+    m_pickFor = new QLabel;   // which conflict the buttons act on
+    m_pickFor->setObjectName(QStringLiteral("section"));
+    pickFlow->addWidget(m_pickFor);
     if (m_mineIsIncoming) {   // upstream on the left, yours on the right
         pickFlow->addWidget(m_useCur);
         pickFlow->addWidget(m_useInc);
@@ -624,7 +644,9 @@ void ResolveWindow::openText(const UnmergedFile &u)
     m_merged->document()->setModified(false);
     m_merged->document()->clearUndoRedoStacks();
     m_stack->setCurrentIndex(0);
+    m_originals.clear();
     parseMerged();
+    buildOriginals();
     m_current = -1;
     if (!m_conflicts.isEmpty())
         gotoConflict(0);
@@ -651,10 +673,14 @@ void ResolveWindow::showSides()
     else
         m_top->setPaneCaptions(m_incLong, m_curLong);
     m_top->showDiff(m_path, m_repo.diffFiles(left, right), false, images);
+    placeOriginals();
 }
 
 void ResolveWindow::openWholeFile(const UnmergedFile &u)
 {
+    m_originals.clear();
+    m_originalOf.clear();
+    m_top->setConflictRows({});
     const QString path = u.path;
     auto arm = [this](QPushButton *b, const QString &text, std::function<void()> fn) {
         QObject::disconnect(b, &QPushButton::clicked, nullptr, nullptr);
@@ -759,6 +785,7 @@ void ResolveWindow::parseMerged()
         }
     }
     m_merged->setKinds(rows);
+    matchOriginals();
     updateOpenFileState();
     updateActions();
 }
@@ -787,7 +814,7 @@ int ResolveWindow::targetConflict() const
     return m_conflicts.isEmpty() ? -1 : int(m_conflicts.size()) - 1;
 }
 
-void ResolveWindow::gotoConflict(int k)
+void ResolveWindow::gotoConflict(int k, bool revealAbove)
 {
     if (k < 0 || k >= m_conflicts.size())
         return;
@@ -812,14 +839,16 @@ void ResolveWindow::gotoConflict(int k)
             row = a >= 0 ? m_top->rowForLine(!m_mineIsIncoming, a + 1)
                 : b2 >= 0 ? m_top->rowForLine(m_mineIsIncoming, b2 + 1) : -1;
     }
-    m_top->revealRow(row);
+    if (revealAbove)
+        m_top->revealRow(row);
     updateActions();
 }
 
-void ResolveWindow::pick(Pick how)
+void ResolveWindow::pick(Pick how, int k)
 {
-    const int k = targetConflict();
     if (k < 0)
+        k = targetConflict();
+    if (k < 0 || k >= m_conflicts.size())
         return;
     const Conflict c = m_conflicts.at(k);
     const QStringList cur = section(c, false);
@@ -1011,7 +1040,17 @@ void ResolveWindow::updateActions()
     const int k = text ? targetConflict() : -1;
     const bool dirty = text && m_merged->document()->isModified();
     m_mergedTitle->setText((dirty ? QStringLiteral("● ") : QString()) + tr("Merged — saved to %1").arg(m_path));
-    m_counter->setText(!text ? QString() : n == 0 ? tr("No conflicts left") : tr("Conflict %1 of %2").arg(k + 1).arg(n));
+    // Numbered as the file was opened, like the frames above: resolving one
+    // doesn't renumber the rest.
+    const int number = k >= 0 && k < m_originalOf.size() && m_originalOf.at(k) >= 0 ? m_originalOf.at(k) + 1 : k + 1;
+    const int total = qMax(int(m_originals.size()), n);
+    m_counter->setText(!text ? QString()
+                       : n == 0 ? tr("No conflicts left")
+                       : n == total ? tr("Conflict %1 of %2").arg(number).arg(total)
+                                    : tr("Conflict %1 of %2 · %3 left").arg(number).arg(total).arg(n));
+    m_pickFor->setText(text && n > 0 ? tr("Conflict %1:").arg(number) : QString());
+    m_pickFor->setVisible(text && n > 0);
+    updateMarks();
     for (QWidget *w : {static_cast<QWidget *>(m_useInc), static_cast<QWidget *>(m_useCur),
                        static_cast<QWidget *>(m_useIncCur), static_cast<QWidget *>(m_useCurInc)})
         w->setEnabled(text && n > 0);
@@ -1038,7 +1077,135 @@ void ResolveWindow::applyTheme()
     c.theirs = Theme::mix(t.background, t.other, soft);
     c.base = Theme::mix(t.background, t.muted, 0.12);
     c.marker = Theme::mix(t.background, t.red, 0.35);
+    c.frame = t.accent;
+    c.frameIdle = t.muted;
     m_merged->setColors(c);
+}
+
+void ResolveWindow::buildOriginals()
+{
+    m_originals.clear();
+    for (const Conflict &c : m_conflicts)
+        m_originals << Original{section(c, false), section(c, true)};
+    placeOriginals();
+    matchOriginals();
+    updateActions();
+}
+
+// Where each conflict's two sections are in the stage files, in order (so
+// repeated text lands in the right place), and so which rows of the panes.
+void ResolveWindow::placeOriginals()
+{
+    int atCur = 0, atInc = 0;
+    const bool curRight = !m_mineIsIncoming;
+    for (Original &o : m_originals) {
+        o.firstRow = o.lastRow = -1;
+        auto take = [&](const QStringList &lines, const QStringList &sec, int &at, bool right) {
+            const int from = sec.isEmpty() ? -1 : findBlock(lines, sec, at);
+            if (from < 0)
+                return;
+            at = from + int(sec.size());
+            for (int l = from; l < at; ++l) {
+                const int row = m_top->rowForLine(right, l + 1);
+                if (row < 0)
+                    continue;
+                o.firstRow = o.firstRow < 0 ? row : qMin(o.firstRow, row);
+                o.lastRow = qMax(o.lastRow, row);
+            }
+        };
+        take(m_curLines, o.cur, atCur, curRight);
+        take(m_incLines, o.inc, atInc, !curRight);
+    }
+    updateMarks();
+}
+
+// Which original each conflict still in the file is: the same sections, in
+// order; one edited by hand keeps the next free number.
+void ResolveWindow::matchOriginals()
+{
+    m_originalOf.clear();
+    int next = 0;
+    for (const Conflict &c : m_conflicts) {
+        const QStringList cur = section(c, false), inc = section(c, true);
+        int found = -1;
+        for (int o = next; o < m_originals.size() && found < 0; ++o)
+            if (m_originals.at(o).cur == cur && m_originals.at(o).inc == inc)
+                found = o;
+        if (found < 0 && next < m_originals.size())
+            found = next;
+        m_originalOf << found;
+        if (found >= 0)
+            next = found + 1;
+    }
+}
+
+int ResolveWindow::originalAtRow(int row) const
+{
+    for (int o = 0; o < m_originals.size(); ++o)
+        if (row >= m_originals.at(o).firstRow && row <= m_originals.at(o).lastRow)
+            return o;
+    return -1;
+}
+
+void ResolveWindow::updateMarks()
+{
+    const bool text = m_stack && m_stack->currentIndex() == 0;
+    const int k = text ? targetConflict() : -1;
+    const int current = k >= 0 && k < m_originalOf.size() ? m_originalOf.at(k) : -1;
+    QVector<DiffPane::Group> above, below;
+    if (text) {
+        for (int o = 0; o < m_originals.size(); ++o) {
+            const Original &x = m_originals.at(o);
+            if (x.firstRow >= 0)
+                above << DiffPane::Group{x.firstRow, x.lastRow, o + 1, o == current, !m_originalOf.contains(o)};
+        }
+        for (int i = 0; i < m_conflicts.size(); ++i)
+            below << DiffPane::Group{m_conflicts.at(i).start, m_conflicts.at(i).end,
+                                     m_originalOf.value(i, i) + 1, i == k, false};
+    }
+    m_top->setConflictRows(above);
+    m_merged->setGroups(below, false);
+}
+
+// Right-click on a conflict in the panes above: every way to settle it, the
+// side clicked first.
+void ResolveWindow::extendSidesMenu(QMenu *menu, QAction *before, int row, bool right)
+{
+    const int o = originalAtRow(row);
+    if (o < 0)
+        return;
+    auto *title = new QAction(tr("Conflict %1").arg(o + 1), menu);
+    title->setEnabled(false);
+    menu->insertAction(before, title);
+    const int k = m_originalOf.indexOf(o);
+    if (k < 0) {
+        auto *a = new QAction(tr("Resolved (Ctrl+Z in the merged file undoes it)"), menu);
+        a->setEnabled(false);
+        menu->insertAction(before, a);
+        return;
+    }
+    // The right pane is always yours.
+    const QString mine = m_mineIsIncoming ? m_incShort : m_curShort;
+    const QString theirs = m_mineIsIncoming ? m_curShort : m_incShort;
+    const Pick useMine = m_mineIsIncoming ? Pick::Incoming : Pick::Current;
+    const Pick useTheirs = m_mineIsIncoming ? Pick::Current : Pick::Incoming;
+    const Pick mineThenTheirs = m_mineIsIncoming ? Pick::IncomingThenCurrent : Pick::CurrentThenIncoming;
+    const Pick theirsThenMine = m_mineIsIncoming ? Pick::CurrentThenIncoming : Pick::IncomingThenCurrent;
+    QVector<QPair<QString, Pick>> items{
+        {tr("Use %1").arg(mine), useMine},
+        {tr("Use %1").arg(theirs), useTheirs},
+        {tr("%1, then %2").arg(mine, theirs), mineThenTheirs},
+        {tr("%1, then %2").arg(theirs, mine), theirsThenMine},
+    };
+    if (!right) {   // clicked on their side: theirs first
+        std::swap(items[0], items[1]);
+        std::swap(items[2], items[3]);
+    }
+    for (const auto &[label, how] : items) {
+        auto *a = new QAction(label, menu);
+        connect(a, &QAction::triggered, this, [this, how, k] { pick(how, k); });
+        menu->insertAction(before, a);
+    }
 }
 
 void ResolveWindow::select(const QString &path)

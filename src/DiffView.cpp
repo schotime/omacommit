@@ -8,6 +8,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QRegularExpression>
@@ -169,6 +170,60 @@ void DiffPane::setLines(const QVector<Line> &lines)
     viewport()->update();
 }
 
+void DiffPane::setGroups(const QVector<Group> &groups, bool muteOthers)
+{
+    m_groups = groups;
+    m_muteOthers = muteOthers;
+    viewport()->update();
+}
+
+const DiffPane::Group *DiffPane::groupAt(int line) const
+{
+    for (const Group &g : m_groups)
+        if (line >= g.first && line <= g.last)
+            return &g;
+    return nullptr;
+}
+
+// Each group framed, with its number in a tab at the frame's top right: in
+// the accent colour for the current one, dashed with a tick once resolved.
+void DiffPane::paintGroups(QPainter &p, const QRect &area)
+{
+    if (m_groups.isEmpty())
+        return;
+    p.setRenderHint(QPainter::Antialiasing);
+    const QPointF off = contentOffset();
+    const int w = viewport()->width();
+    QFont small = font();
+    small.setPointSizeF(small.pointSizeF() * 0.85);
+    const QFontMetrics sfm(small);
+    for (const Group &g : m_groups) {
+        const QTextBlock first = document()->findBlockByNumber(g.first);
+        const QTextBlock last = document()->findBlockByNumber(g.last);
+        if (!first.isValid() || !last.isValid())
+            continue;
+        const qreal top = blockBoundingGeometry(first).translated(off).top();
+        const qreal bottom = blockBoundingGeometry(last).translated(off).bottom();
+        if (bottom < area.top() || top > area.bottom())
+            continue;
+        const QColor col = g.current ? m_c.frame : m_c.frameIdle;
+        QPen pen(col, g.current ? 2.0 : 1.0, g.done ? Qt::DashLine : Qt::SolidLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        const QRectF box(1.5, top + 0.5, w - 3, bottom - top - 1);
+        p.drawRoundedRect(box, 3, 3);
+        const QString label = g.done ? QStringLiteral("✓ %1").arg(g.number) : QString::number(g.number);
+        const qreal lw = sfm.horizontalAdvance(label) + 10, lh = sfm.height() + 2;
+        const QRectF tab(box.right() - lw - 4, box.top(), lw, lh);
+        p.setPen(Qt::NoPen);
+        p.setBrush(g.current ? m_c.frame : m_c.bg);
+        p.drawRoundedRect(tab, 3, 3);
+        p.setPen(g.current ? m_c.bg : col);
+        p.setFont(small);
+        p.drawText(tab, Qt::AlignCenter, label);
+    }
+}
+
 void DiffPane::setKinds(const QVector<Line> &lines)
 {
     m_lines = lines;
@@ -262,6 +317,10 @@ void DiffPane::paintEvent(QPaintEvent *e)
                 break;
             const Line &ln = m_lines.at(i);
             const QRectF full(0, r.top(), w, r.height());
+            if (m_muteOthers && (ln.kind == Removed || ln.kind == Added || ln.kind == Empty) && !groupAt(i)) {
+                p.fillRect(full, m_c.automatic);   // git merged this by itself: nothing to decide
+                continue;
+            }
             switch (ln.kind) {
             case Removed: p.fillRect(full, m_c.removed); break;
             case Added:   p.fillRect(full, m_c.added); break;
@@ -310,6 +369,10 @@ void DiffPane::paintEvent(QPaintEvent *e)
         }
     }
     QPlainTextEdit::paintEvent(e);
+    {
+        QPainter p(viewport());
+        paintGroups(p, e->rect());
+    }
 
     if (m_showWs) {   // · for each space, → across each tab, in the muted colour
         QPainter p(viewport());
@@ -450,6 +513,8 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     // history anyway; undo works on buffer snapshots instead.
     m_right->setUndoRedoEnabled(false);
     m_right->installEventFilter(this);
+    m_left->viewport()->installEventFilter(this);    // row clicks, for the resolve window
+    m_right->viewport()->installEventFilter(this);
 
     // Re-diff once typing pauses, not on every keystroke.
     m_rediffTimer = new QTimer(this);
@@ -495,6 +560,7 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     m_inline = new DiffPane;
     m_inline->setDualNumbers(true);
     m_inline->installEventFilter(this);
+    m_inline->viewport()->installEventFilter(this);
     m_inlineCaption = new QLabel;
     m_inlineCaption->setObjectName(QStringLiteral("muted"));
     m_inlineCaption->setContentsMargins(10, 4, 10, 4);
@@ -918,6 +984,9 @@ void DiffView::applyTheme()
     c.addedStrong = Theme::mix(t.background, right, strong);
     c.empty = t.border;
     c.issue = Theme::mix(t.background, t.red, 0.8);
+    c.frame = t.accent;
+    c.frameIdle = t.muted;
+    c.automatic = Theme::mix(t.background, t.muted, t.light ? 0.08 : 0.10);
     m_issueNote->setStyleSheet(QStringLiteral("color: %1;").arg(t.red.name()));
     m_left->setColors(c);
     m_right->setColors(c);
@@ -1146,8 +1215,58 @@ void DiffView::discard()
     updateHeader();
 }
 
+void DiffView::setConflictRows(const QVector<DiffPane::Group> &groups)
+{
+    m_conflictRows = groups;
+    applyConflictRows();
+}
+
+// The frames in rows for the two panes, and in lines for the inline view: a
+// group there is every inline line that came from its rows.
+void DiffView::applyConflictRows()
+{
+    const bool on = !m_conflictRows.isEmpty();
+    m_left->setGroups(m_conflictRows, on);
+    m_right->setGroups(m_conflictRows, on);
+    QVector<DiffPane::Group> lines;
+    for (DiffPane::Group g : m_conflictRows) {
+        int first = -1, last = -1;
+        for (int i = 0; i < m_inlineToRow.size(); ++i)
+            if (m_inlineToRow.at(i) >= g.first && m_inlineToRow.at(i) <= g.last) {
+                first = first < 0 ? i : first;
+                last = i;
+            }
+        if (first < 0)
+            continue;
+        g.first = first;
+        g.last = last;
+        lines << g;
+    }
+    m_inline->setGroups(lines, on);
+}
+
 bool DiffView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (onRowClicked
+        && (watched == m_left->viewport() || watched == m_right->viewport() || watched == m_inline->viewport())
+        && (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::MouseButtonDblClick)) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        DiffPane *pane = watched == m_left->viewport() ? m_left : watched == m_right->viewport() ? m_right : m_inline;
+        // A click, not the end of a drag that selected text.
+        if (me->button() == Qt::LeftButton && !pane->textCursor().hasSelection()) {
+            int row = pane->cursorForPosition(me->position().toPoint()).blockNumber();
+            bool right = pane == m_right;
+            if (pane == m_inline) {   // back to the row, and which side of it this line is
+                right = row < m_inline->lineCount() && m_inline->lineAt(row).kind != DiffPane::Removed;
+                row = m_inlineToRow.value(row, -1);
+            }
+            const bool dbl = event->type() == QEvent::MouseButtonDblClick;
+            QTimer::singleShot(0, this, [this, row, right, dbl] {
+                if (onRowClicked)
+                    onRowClicked(row, right, dbl);
+            });
+        }
+    }
     // The editor would otherwise take these for its own (disabled) undo.
     if ((watched == m_right || watched == m_inline) && event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
@@ -1250,6 +1369,14 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
         menu->insertAction(before, a);
         return a;
     };
+    if (extendMenu && showing && row >= 0) {
+        const int sep = int(menu->actions().size());
+        const bool rightSide = pane == m_right
+            || (pane == m_inline && paneLine < m_inline->lineCount() && m_inline->lineAt(paneLine).kind != DiffPane::Removed);
+        extendMenu(menu, before, row, rightSide);
+        if (int(menu->actions().size()) > sep)
+            menu->insertSeparator(before);
+    }
     if (m_lineAction) {
         const bool dirty = isDirty();
         const QString later = dirty ? tr(" (save your edits first)") : QString();
@@ -1393,6 +1520,7 @@ void DiffView::buildInline()
         i = end;
     }
     m_inline->setLines(lines);
+    applyConflictRows();
 }
 
 // Shows whichever view is wanted, keeping the same part of the file in view.

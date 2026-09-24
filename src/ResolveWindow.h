@@ -50,8 +50,17 @@ private:
     QStringList mergedLines() const;
     void parseMerged();
     int targetConflict() const;
-    void gotoConflict(int k);
-    void pick(Pick how);
+    // `revealAbove`: scroll the panes above to it (not when it was clicked there).
+    void gotoConflict(int k, bool revealAbove = true);
+    void pick(Pick how, int k = -1);   // k: which conflict; the target one by default
+    // The file's conflicts as it was opened, framed and numbered in the panes
+    // above and followed as they are resolved.
+    void buildOriginals();
+    void placeOriginals();
+    void matchOriginals();
+    void updateMarks();
+    int originalAtRow(int row) const;
+    void extendSidesMenu(QMenu *menu, QAction *before, int row, bool right);
     void useWholeSide(bool incoming);
     QStringList section(const Conflict &c, bool incoming) const;
 
@@ -83,11 +92,12 @@ private:
     QPushButton *m_commitBtn;
     QPushButton *m_continueBtn;
     QProcess *m_continuing = nullptr;
-    QStackedWidget *m_stack;
+    QStackedWidget *m_stack = nullptr;
     DiffView *m_top;
     DiffPane *m_merged;
     QLabel *m_mergedTitle;
     QLabel *m_counter;
+    QLabel *m_pickFor;
     QToolButton *m_prevBtn;
     QToolButton *m_nextBtn;
     QPushButton *m_useInc;
@@ -109,6 +119,12 @@ private:
     bool m_openHasBase = true;   // the open file has a common ancestor (both modified, not both added)
     QString m_incPath, m_curPath;   // the two sides, written out for git diff
     QVector<Conflict> m_conflicts;
+    struct Original {
+        QStringList cur, inc;             // its two sections
+        int firstRow = -1, lastRow = -1;  // where it is in the panes above
+    };
+    QVector<Original> m_originals;
+    QVector<int> m_originalOf;   // for each conflict left, which original it is
     int m_current = -1;
     QSet<QString> m_resolved;    // marked resolved this session: kept in the list, ticked
     QStringList m_listed;
