@@ -254,16 +254,26 @@ void CommitWindow::refresh()
         QHash<QString, int> byPath;
         for (int i = 0; i < m_entries.size(); ++i)
             byPath.insert(m_entries.at(i).path, i);
+        // They come first, in the commit's order, then the changes not in it yet.
+        QVector<FileEntry> ordered;
+        QSet<int> taken;
         const QVector<FileEntry> committed = m_repo.lastCommitFiles();
         for (const FileEntry &e : committed) {
             const auto it = byPath.constFind(e.path);
             if (it != byPath.constEnd()) {
-                m_entries[it.value()].inLastCommit = true;
-                m_entries[it.value()].commitStatus = e.commitStatus;
+                FileEntry merged = m_entries.at(it.value());
+                merged.inLastCommit = true;
+                merged.commitStatus = e.commitStatus;
+                ordered.push_back(merged);
+                taken.insert(it.value());
             }
             else
-                m_entries.push_back(e);
+                ordered.push_back(e);
         }
+        for (int i = 0; i < m_entries.size(); ++i)
+            if (!taken.contains(i))
+                ordered.push_back(m_entries.at(i));
+        m_entries = ordered;
     }
 
     const QString branch = m_repo.branch();
