@@ -40,7 +40,8 @@ og commit           # the same thing, spelled out
 og commit ~/code/app  # a specific repo
 ```
 
-Launched from a menu with no repo, it asks you to pick one.
+Launched from a menu with no repo, it asks you to pick one in the desktop's file
+chooser (the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal.
 
 | Subcommand | Alias | What it opens |
 | --- | --- | --- |

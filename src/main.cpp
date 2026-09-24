@@ -1,6 +1,7 @@
 #include "CommitWindow.h"
 #include "GitRepo.h"
 #include "LogWindow.h"
+#include "Portal.h"
 #include "ResolveWindow.h"
 #include "Style.h"
 #include "Theme.h"
@@ -103,9 +104,12 @@ int main(int argc, char *argv[])
 
     QString root = GitRepo::findRoot(start);
     if (root.isEmpty() && !hasPath) {
-        // Launched from a menu (cwd = $HOME): let the user pick a repo.
-        const QString picked = QFileDialog::getExistingDirectory(nullptr, QObject::tr("Choose a Git repository"),
-                                                                 QDir::homePath());
+        // Launched from a menu (cwd = $HOME): let the user pick a repo, in the
+        // desktop's file chooser when there is one.
+        const QString title = QObject::tr("Choose a Git repository");
+        QString picked;
+        if (Portal::pickDirectory(title, QDir::homePath(), &picked) == Portal::Result::Unavailable)
+            picked = QFileDialog::getExistingDirectory(nullptr, title, QDir::homePath());
         if (picked.isEmpty())
             return 0;
         start = picked;
