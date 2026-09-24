@@ -123,7 +123,8 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   edits asks whether to save them — a commit takes files from disk, so unsaved
   edits would otherwise be left out. Saving keeps the file's line endings, and if
   the file changed on disk since it was opened, asks before overwriting. Editing
-  is offered for plain modifications of UTF-8 files; others stay read-only.
+  is offered for modified and new (untracked or added) UTF-8 files; deleted,
+  renamed and conflicted ones stay read-only.
 - **It uses the real `git` binary**, so hooks, GPG/SSH signing and credential
   helpers work as they do in your terminal. Commit and push run in the
   background, so slow pre-commit hooks don't freeze the window.

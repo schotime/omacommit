@@ -319,6 +319,13 @@ void CommitWindow::refresh()
         m_diff->showMessage({}, tr("Working tree clean"));
 }
 
+// A file the commit would add: untracked, added to the index, or -- when
+// amending -- added by the commit being replaced. Its left side is empty.
+static bool isNewFile(const FileEntry &e)
+{
+    return e.untracked() || e.index == u'A' || (e.inLastCommit && e.commitStatus == u'A');
+}
+
 void CommitWindow::showCurrentDiff()
 {
     auto *it = m_files->currentItem();
@@ -361,7 +368,7 @@ void CommitWindow::showCurrentDiff()
         if (utf8.hasError() || m_diffLoaded.startsWith("\xEF\xBB\xBF"))
             editable = false;
     }
-    if (editable) {
+    if (editable && !isNewFile(e)) {
         const GitResult left = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
                                            base + QLatin1Char(':') + e.path});
         editable = left.ok();
@@ -431,13 +438,18 @@ QString CommitWindow::diffBase() const
     return QStringLiteral("HEAD");
 }
 
-// Only plain modifications: for new, deleted, renamed or conflicted files the
-// left side is missing or is not "the same file before". When amending, a file
-// the commit changed counts too, as long as the commit modified it rather than
-// adding, deleting or renaming it.
+// Plain modifications, and new files (edited against nothing). Deleted,
+// renamed and conflicted files have no single "file before" to edit against.
+// When amending, a file the commit changed counts too, as long as the commit
+// modified or added it rather than deleting or renaming it.
 bool CommitWindow::canEditInDiff(const FileEntry &e) const
 {
     auto plain = [](QChar c) { return c == u' ' || c == u'M'; };
+    if (isNewFile(e)) {
+        if (!e.untracked() && !plain(e.worktree))
+            return false;   // deleted since, or a both-added conflict
+        return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
+    }
     if (!plain(e.index) || !plain(e.worktree))
         return false;
     if (e.inLastCommit ? e.commitStatus != u'M' : !e.worktreeChange())
