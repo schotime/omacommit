@@ -132,7 +132,7 @@ public:
 
     void setEditable(bool editable);
     // Resolve window: a caption over each pane, tints instead of red/green,
-    // and no Alt+Up/Down (the window uses them to move between conflicts).
+    // and no change arrows (the window steps through its conflicts instead).
     void setPaneCaptions(const QString &left, const QString &right);
     // The file shown, for its language: set before showDiff.
     void setFileName(const QString &path) { m_fileName = path; }
@@ -145,7 +145,9 @@ public:
     std::function<void(QMenu *menu, QAction *before, int row, bool right)> extendMenu;
     std::function<void(int row, bool right, bool doubleClick)> onRowClicked;
     void setSideTints(const QColor &left, const QColor &right);
-    void setNavShortcutsEnabled(bool enabled);
+    // Off: no ↑↓ buttons and no Alt+Up/Down -- the resolve window steps
+    // through its conflicts instead, with arrows of its own.
+    void setChangeNavigation(bool enabled);
     int rowForLine(bool right, int lineNumber) const;
     void revealRow(int row);
     bool isDirty() const;

@@ -156,7 +156,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
 
     // --- right, page 0: the two sides over the merged file
     m_top = new DiffView;
-    m_top->setNavShortcutsEnabled(false);
+    m_top->setChangeNavigation(false);   // one set of arrows, the conflicts' (by the merged file)
     // The conflicts can be picked right where the two sides are shown: a click
     // makes one current, a double-click takes that side, and right-click
     // offers every way.

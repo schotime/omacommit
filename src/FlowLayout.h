@@ -39,21 +39,33 @@ public:
     }
 
 private:
+    // Each row's items are centred on the row's height, so a label beside a
+    // button sits level with the button's text. Hidden items take no room.
     int arrange(const QRect &rect, bool apply) const
     {
         int x = rect.x(), y = rect.y(), lineHeight = 0;
+        QList<QPair<QLayoutItem *, QRect>> line;
+        auto place = [&] {
+            if (apply)
+                for (const auto &[item, r] : line)
+                    item->setGeometry(r.translated(0, (lineHeight - r.height()) / 2));
+            line.clear();
+        };
         for (QLayoutItem *item : m_items) {
+            if (item->isEmpty())
+                continue;
             const QSize size = item->sizeHint();
             if (x > rect.x() && x + size.width() > rect.right() + 1) {   // wrap
+                place();
                 x = rect.x();
                 y += lineHeight + spacing();
                 lineHeight = 0;
             }
-            if (apply)
-                item->setGeometry(QRect(QPoint(x, y), size));
+            line.append({item, QRect(QPoint(x, y), size)});
             x += size.width() + spacing();
             lineHeight = qMax(lineHeight, size.height());
         }
+        place();
         return y + lineHeight - rect.y();
     }
 

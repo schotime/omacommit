@@ -1485,10 +1485,12 @@ void DiffView::setSideTints(const QColor &left, const QColor &right)
     applyTheme();
 }
 
-void DiffView::setNavShortcutsEnabled(bool enabled)
+void DiffView::setChangeNavigation(bool enabled)
 {
     m_prev->setShortcut(enabled ? QKeySequence(QStringLiteral("Alt+Up")) : QKeySequence());
     m_next->setShortcut(enabled ? QKeySequence(QStringLiteral("Alt+Down")) : QKeySequence());
+    m_prev->setVisible(enabled);
+    m_next->setVisible(enabled);
 }
 
 int DiffView::rowForLine(bool right, int lineNumber) const
