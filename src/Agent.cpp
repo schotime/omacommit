@@ -1,6 +1,5 @@
 #include "Agent.h"
 
-#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
@@ -26,42 +25,52 @@ QString run(const QString &program, const QStringList &args, int *exitCode = nul
 
 Agent Agent::detect()
 {
-    Agent a;
-    const QString tool = QStandardPaths::findExecutable(QStringLiteral("omarchy-default-agent"));
-    if (tool.isEmpty())
-        return a;   // not Omarchy
-    a.id = run(tool, {});
-    if (a.id == u"claude") {
-        a.name = QStringLiteral("Claude Code");
-        a.supported = true;
-    } else if (a.id == u"codex") {
-        a.name = QStringLiteral("Codex");
-        a.supported = true;
-    } else {
-        a.name = a.id;
-    }
-    if (a.id.isEmpty())
-        return a;
+    const QVector<Agent> agents = available();
+    return agents.isEmpty() ? Agent{} : agents.first();
+}
 
-    // Installed the way omarchy-default-agent decides it: the user's own copy
-    // in ~/.local/bin (anything there other than Omarchy's `mise use -g`
-    // wrapper), or a mise install. Omarchy puts install-on-first-run wrappers
-    // on PATH, so being on PATH proves nothing -- running one would start an
-    // install.
-    const QString local = QDir::homePath() + QStringLiteral("/.local/bin/") + a.id;
-    const QFileInfo fi(local);
-    if (fi.isExecutable()) {
-        QFile f(local);
-        const bool wrapper = !fi.isSymLink() && f.open(QIODevice::ReadOnly) && f.readAll().contains("mise use -g");
-        if (!wrapper)
-            a.installed = true;
+QVector<Agent> Agent::available()
+{
+    QVector<Agent> agents;
+    const QString tool = QStandardPaths::findExecutable(QStringLiteral("omarchy-default-agent"));
+    const QString preferred = tool.isEmpty() ? QString() : run(tool, {});
+
+    for (const QString &id : {QStringLiteral("claude"), QStringLiteral("codex"), QStringLiteral("opencode")}) {
+        Agent a;
+        a.id = id;
+        a.name = id == u"claude" ? QStringLiteral("Claude Code")
+               : id == u"codex" ? QStringLiteral("Codex") : QStringLiteral("OpenCode");
+        a.supported = true;
+        a.executable = QStandardPaths::findExecutable(id);
+        if (a.executable.isEmpty())
+            continue;
+#ifdef Q_OS_WIN
+        // npm installs extensionless Unix shims beside the Windows .cmd file.
+        if (QFileInfo(a.executable).suffix().isEmpty()) {
+            const QString exe = a.executable + QStringLiteral(".exe");
+            const QString cmd = a.executable + QStringLiteral(".cmd");
+            if (QFileInfo::exists(exe))
+                a.executable = exe;
+            else if (QFileInfo::exists(cmd))
+                a.executable = cmd;
+            else
+                continue;
+        }
+#else
+        // Omarchy's PATH includes install-on-first-use mise wrappers. Do not
+        // launch one merely to test availability (it would install an agent).
+        const QFileInfo fi(a.executable);
+        QFile f(a.executable);
+        if (!fi.isSymLink() && f.open(QIODevice::ReadOnly) && f.read(4096).contains("mise use -g"))
+            continue;
+#endif
+        a.installed = true;
+        if (id == preferred)
+            agents.prepend(a);
+        else
+            agents.append(a);
     }
-    if (!a.installed && !QStandardPaths::findExecutable(QStringLiteral("mise")).isEmpty()) {
-        int code = -1;
-        run(QStringLiteral("mise"), {QStringLiteral("where"), a.id}, &code);
-        a.installed = code == 0;
-    }
-    return a;
+    return agents;
 }
 
 QStringList Agent::arguments(const QString &replyFile) const
@@ -75,6 +84,16 @@ QStringList Agent::arguments(const QString &replyFile) const
         // the final message in a file instead of mixed with its progress output.
         return {QStringLiteral("exec"), QStringLiteral("--sandbox"), QStringLiteral("read-only"),
                 QStringLiteral("--ephemeral"), QStringLiteral("--skip-git-repo-check"), QStringLiteral("--color"),
-                QStringLiteral("never"), QStringLiteral("-o"), replyFile, QStringLiteral("-")};
+                 QStringLiteral("never"), QStringLiteral("-o"), replyFile, QStringLiteral("-")};
+    if (id == u"opencode")
+        // OpenCode's run command takes a message (not stdin). Attach the prompt
+        // as a file to avoid Windows' 32K command-line limit for large diffs.
+        // JSON events let us extract just the model's text rather than progress.
+        // Place --file after the positional message: its array parser consumes
+        // any following values as additional file paths.
+        return {QStringLiteral("--pure"), QStringLiteral("run"), QStringLiteral("--format"),
+                QStringLiteral("json"),
+                QStringLiteral("Read the attached prompt and answer it. Do not use tools."),
+                QStringLiteral("--file"), replyFile};
     return {};
 }

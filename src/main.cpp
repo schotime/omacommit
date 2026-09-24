@@ -20,8 +20,6 @@
 
 #ifdef Q_OS_WIN
 #include <io.h>
-#define isatty _isatty
-#define STDERR_FILENO _fileno(stderr)
 #else
 #include <unistd.h>
 #endif
@@ -51,7 +49,12 @@ void printUsage()
 // entry there is no terminal to read, so it has to be a dialog.
 void reportStartupError(const QString &message)
 {
-    if (::isatty(STDERR_FILENO)) {
+#ifdef Q_OS_WIN
+    const bool hasTerminal = ::_isatty(::_fileno(stderr));
+#else
+    const bool hasTerminal = ::isatty(STDERR_FILENO);
+#endif
+    if (hasTerminal) {
         std::fprintf(stderr, "og: %s\n", qPrintable(message));
         return;
     }

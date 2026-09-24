@@ -7,8 +7,10 @@ diff of the selected file on the right, all colored by your current Omarchy them
 
 ## Build & install
 
+### Omarchy / Linux
+
 ```sh
-sudo pacman -S --needed qt6-base cmake base-devel
+sudo pacman -S --needed qt6-base qt6-svg cmake base-devel
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --build build -j
 cmake --install build
@@ -18,6 +20,7 @@ That installs `~/.local/bin/og`,
 `~/.local/share/applications/omarchy-commit.desktop` and its icon
 (`~/.local/share/icons/hicolor/scalable/apps/omarchy-commit.svg`), and needs no
 root.
+
 Drop the `CMAKE_INSTALL_PREFIX` line to install under `/usr/local` for every
 user on the machine instead (`cmake --install` then needs `sudo`).
 
@@ -31,6 +34,38 @@ qt.qpa.services: Failed to register with host portal ... App info not found
 
 which is harmless but noisy. Both `~/.local/bin` and `~/.local/share` are in
 the portal's search path, so a user install is enough to silence it.
+
+### Windows: single executable
+
+The released `og.exe` needs no MSYS2 or Qt installation on the machine where
+it runs. MSYS2 is **only the build toolchain** used to make that executable.
+To build it yourself, install [MSYS2](https://www.msys2.org/), open its
+**UCRT64** shell, and run:
+
+```sh
+pacman -Syu
+# If MSYS2 asks you to close the shell, reopen UCRT64 and run pacman -Syu again.
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-static \
+  mingw-w64-ucrt-x86_64-libwebp
+cd /d/path/to/omacommit
+cmake -S . -B build-standalone -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static -DOG_STANDALONE=ON
+cmake --build build-standalone -j 4
+./build-standalone/og.exe --version
+```
+
+Copy `build-standalone/og.exe` anywhere and launch it directly (including by
+double-click). It links Qt, its plugins, codecs and the compiler runtime into
+the executable; Windows system DLLs are still used. **Git for Windows must be
+installed and on PATH** for repository operations: og invokes the real `git`
+binary so Git hooks, signing and credential helpers work. The Omarchy theme
+and agent are optional on Windows; without them og uses fallback colours and
+disables **Write**.
+
+Static linking Qt under LGPL has additional license obligations when
+redistributing the executable (including providing a way to relink it with a
+modified Qt); check your Qt licensing terms before distribution.
 
 ## Use
 
@@ -132,16 +167,16 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   from the current HEAD, leaving the branch you were on where it was. Leave it
   empty to commit to the current branch. A name git rejects, or one that already
   exists, is refused before anything is changed.
-- **✨ Write** asks Omarchy's default coding agent (`omarchy default agent`) to
-  write the message — Claude Code or Codex for now. It sends the diff of the
+- **✨ Write** uses Claude Code, Codex or OpenCode when installed on `PATH`.
+  On Omarchy, its configured default agent is preferred; the button's menu lets
+  you choose among installed agents. It sends the diff of the
   *checked* files (against the parent when amending), the last dozen commit
   subjects so it matches the repository's style, and your draft if you started
   one; the reply replaces the message as one undo step, so Ctrl+Z restores what
-  you had. Nothing is sent until you click, and the agent runs one-shot with no
-  tools (`claude -p --tools ""`, `codex exec --sandbox read-only`), so it can
-  only read what it is given. **■ Stop** cancels it. The button is disabled, with
-  the reason on hover, when your default agent isn't installed or isn't one of
-  those two.
+  you had. Nothing is sent until you click. Claude runs with no tools, Codex
+  in a read-only sandbox, and OpenCode with permissions denied and default
+  plugins disabled. **■ Stop** cancels it. The button is hidden when none are
+  installed.
 - **Amend** pre-fills the last message and adds the files the last commit
   already contains to the list, marked *In last commit* and checked. Uncheck one
   and it is taken out of the amended commit: its change returns to the working

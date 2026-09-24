@@ -33,6 +33,11 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcessEnvironment>
+#include <QPointer>
+#include <QThreadPool>
 
 namespace {
 constexpr int IndexRole = Qt::UserRole + 1;
@@ -58,11 +63,31 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
 
-    // Writes a message with Omarchy's default coding agent (Claude Code or Codex).
-    m_agent = Agent::detect();
+    // Prefer Omarchy's default, then other agents installed on PATH.
+    m_agents = Agent::available();
+    if (!m_agents.isEmpty())
+        m_agent = m_agents.first();
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
-    m_writeBtn->setVisible(!m_agent.id.isEmpty());
+    m_writeBtn->setVisible(!m_agents.isEmpty());
+    if (m_agents.size() > 1) {
+        auto *menu = new QMenu(m_writeBtn);
+        for (const Agent &a : m_agents) {
+            auto *choice = menu->addAction(a.name);
+            choice->setCheckable(true);
+            connect(choice, &QAction::triggered, this, [this, a] {
+                m_agent = a;
+                updateWriteButton();
+            });
+        }
+        auto *chooseAgent = new QToolButton;
+        chooseAgent->setText(tr("▾"));
+        chooseAgent->setObjectName(QStringLiteral("agentPicker"));
+        chooseAgent->setFixedWidth(26);
+        chooseAgent->setMenu(menu);
+        chooseAgent->setPopupMode(QToolButton::InstantPopup);
+        m_agentMenuBtn = chooseAgent;
+    }
 
     m_historyBtn = new QToolButton;
     m_historyBtn->setText(tr("Recent ▾"));
@@ -129,6 +154,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     msgHead->addWidget(sectionLabel(tr("Message")));
     msgHead->addStretch();
     msgHead->addWidget(m_writeBtn);
+    if (m_agentMenuBtn)
+        msgHead->addWidget(m_agentMenuBtn);
     msgHead->addWidget(m_historyBtn);
     l->addLayout(msgHead);
     l->addWidget(m_message, 2);
@@ -339,6 +366,7 @@ void CommitWindow::showCurrentDiff()
         }
     }
 
+    const int request = ++m_diffRequest;
     m_diffPath = path;
     m_diffLoaded.clear();
     m_diffBase.clear();
@@ -346,74 +374,67 @@ void CommitWindow::showCurrentDiff()
         m_diff->showMessage({}, tr("Select a file to see its changes"));
         return;
     }
-    const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
+    const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
+    const QString title = it->text(0);
     const QString base = diffBase();
-    bool editable = canEditInDiff(e);
-    if (editable) {
-        QFile f(QDir(m_repo.root()).filePath(e.path));
-        editable = f.open(QIODevice::ReadOnly);
-        if (editable)
-            m_diffLoaded = f.readAll();
-        // Lines are written back as UTF-8, which would mangle anything else.
-        QStringDecoder utf8(QStringDecoder::Utf8);
-        [[maybe_unused]] const QString decoded = utf8(m_diffLoaded);   // decoding is what sets hasError()
-        if (utf8.hasError() || m_diffLoaded.startsWith("\xEF\xBB\xBF"))
-            editable = false;
-    }
-    if (editable) {
-        const GitResult left = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
-                                           base + QLatin1Char(':') + e.path});
-        editable = left.ok();
-        m_diffBase = left.out;
-    }
-    const QByteArray diff = m_repo.diff(e, base);
-    // Whether git's diff kept the CRs (it drops them when core.autocrlf
-    // normalises the file). Re-diffs of edits must see the file the same way,
-    // or one keystroke would turn every line of a CRLF file into a change.
-    m_diffCr = false;
-    for (const QByteArray &line : diff.split('\n'))
-        if ((line.startsWith('+') || line.startsWith(' ')) && !line.startsWith("+++") && line.endsWith('\r')) {
-            m_diffCr = true;
-            break;
+    const bool mayEdit = canEditInDiff(e);
+    const GitRepo repo = m_repo;
+    QPointer<CommitWindow> self(this);
+    m_diff->showMessage(title, tr("Loading diff…"));
+    QThreadPool::globalInstance()->start([self, repo, request, e, title, base, mayEdit] {
+        const QString diskPath = QDir(repo.root()).filePath(e.path);
+        QByteArray onDisk;
+        QFile file(diskPath);
+        if (file.open(QIODevice::ReadOnly))
+            onDisk = file.readAll();
+        bool editable = mayEdit && file.isOpen();
+        if (editable) {
+            QStringDecoder utf8(QStringDecoder::Utf8);
+            [[maybe_unused]] const QString decoded = utf8(onDisk);
+            editable = !utf8.hasError() && !onDisk.startsWith("\xEF\xBB\xBF");
         }
-    // For an image: the base's version against the one on disk.
-    const QString before = base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
-    const QString onDiskPath = QDir(m_repo.root()).filePath(e.path);
-    const ImageFetch images = [this, before, onDiskPath] {
-        ImageSides s;
-        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
-        s.hasBefore = b.ok();
-        s.before = b.out;
-        QFile f(onDiskPath);
-        s.hasAfter = f.open(QIODevice::ReadOnly);
-        if (s.hasAfter)
-            s.after = f.readAll();
-        return s;
-    };
-    m_diff->showDiff(it->text(0), diff, editable, images);
-    // Git may show the file through filters (autocrlf, textconv, ...). If what
-    // the pane shows is not what is on disk, saving it would rewrite the file
-    // as something else, so leave it read-only.
-    if (editable && m_diff->rightLines() != DiffView::linesOf(m_diffLoaded))
-        m_diff->setEditable(false);
-
-    // Whitespace problems on the lines this commit would add -- measured
-    // against the same base as the diff (the parent when amending).
-    m_wsRules = m_repo.whitespaceRules(e.path);
-    m_wsBase.clear();
-    if (!e.untracked() && e.index != u'A' && m_repo.hasHead()) {
-        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
-                                        base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath)});
-        if (b.ok())
-            m_wsBase = b.out;
-    }
-    QByteArray onDisk = m_diffLoaded;
-    if (onDisk.isEmpty()) {
-        QFile f(QDir(m_repo.root()).filePath(e.path));
-        if (f.open(QIODevice::ReadOnly))
-            onDisk = f.readAll();
-    }
-    flagWhitespace(onDisk);
+        const QString before = base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
+        const GitResult old = repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+        if (editable)
+            editable = old.ok() && e.oldPath.isEmpty();
+        const QByteArray diff = repo.diff(e, base);
+        bool diffCr = false;
+        for (const QByteArray &line : diff.split('\n'))
+            if ((line.startsWith('+') || line.startsWith(' ')) && !line.startsWith("+++") && line.endsWith('\r')) {
+                diffCr = true;
+                break;
+            }
+        const WhitespaceRules rules = repo.whitespaceRules(e.path);
+        const QByteArray wsBase = !e.untracked() && e.index != u'A' && old.ok() ? old.out : QByteArray();
+        const QHash<int, QString> issues = repo.whitespaceIssues(rules, wsBase, onDisk);
+        if (!self)
+            return;
+        QMetaObject::invokeMethod(self, [self, request, repo, title, diskPath, before, editable,
+                                         diff, diffCr, old, rules, wsBase, onDisk, issues] {
+            if (!self || request != self->m_diffRequest)
+                return;
+            self->m_diffLoaded = editable ? onDisk : QByteArray();
+            self->m_diffBase = editable ? old.out : QByteArray();
+            self->m_diffCr = diffCr;
+            self->m_wsRules = rules;
+            self->m_wsBase = wsBase;
+            const ImageFetch images = [repo, before, diskPath] {
+                ImageSides sides;
+                const GitResult prior = repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+                sides.hasBefore = prior.ok();
+                sides.before = prior.out;
+                QFile f(diskPath);
+                sides.hasAfter = f.open(QIODevice::ReadOnly);
+                if (sides.hasAfter)
+                    sides.after = f.readAll();
+                return sides;
+            };
+            self->m_diff->showDiff(title, diff, editable, images);
+            if (editable && self->m_diff->rightLines() != DiffView::linesOf(onDisk))
+                self->m_diff->setEditable(false);
+            self->m_diff->setWhitespaceIssues(issues);
+        }, Qt::QueuedConnection);
+    });
 }
 
 void CommitWindow::flagWhitespace(const QByteArray &text)
@@ -1004,18 +1025,23 @@ void CommitWindow::updateWriteButton()
         m_writeBtn->setText(tr("■ Stop"));
         m_writeBtn->setToolTip(tr("Stop %1").arg(m_agent.name));
         m_writeBtn->setEnabled(true);
+        if (m_agentMenuBtn)
+            m_agentMenuBtn->setEnabled(false);
         return;
     }
-    m_writeBtn->setText(tr("✨ Write"));
+    m_writeBtn->setText(tr("✨ Write · %1").arg(m_agent.name));
     m_writeBtn->setEnabled(!m_busy && m_agent.usable());
+    if (m_agentMenuBtn) {
+        m_agentMenuBtn->setEnabled(!m_busy);
+        m_agentMenuBtn->setToolTip(tr("Agent: %1 — choose another").arg(m_agent.name));
+        for (QAction *choice : m_agentMenuBtn->menu()->actions())
+            choice->setChecked(choice->text() == m_agent.name);
+    }
     if (m_agent.usable())
-        m_writeBtn->setToolTip(tr("Write a commit message for the checked changes with %1, your default agent.\n"
+        m_writeBtn->setToolTip(tr("Write a commit message for the checked changes with %1.\n"
                                   "Sends their diff to it; nothing is sent until you click.").arg(m_agent.name));
-    else if (!m_agent.supported)
-        m_writeBtn->setToolTip(tr("Writing messages works with Claude Code or Codex; your default agent is %1.\n"
-                                  "Change it with: omarchy default agent claude").arg(m_agent.name));
     else
-        m_writeBtn->setToolTip(tr("%1 isn't installed yet. Open it once with: omarchy agent").arg(m_agent.name));
+        m_writeBtn->setToolTip(tr("Install Claude Code, Codex or OpenCode on PATH to write messages."));
 }
 
 // What the agent is asked: the checked changes as they will be committed --
@@ -1091,10 +1117,25 @@ void CommitWindow::writeMessage()
         m_tmp = std::make_unique<QTemporaryDir>();
     const QString replyFile = m_tmp->filePath(QStringLiteral("reply"));
     QFile::remove(replyFile);
+    if (m_agent.id == u"opencode") {
+        QFile promptFile(replyFile);
+        if (!promptFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            promptFile.write(prompt.toUtf8()) != prompt.toUtf8().size()) {
+            showError(tr("Could not prepare the prompt for OpenCode"), promptFile.errorString());
+            return;
+        }
+        promptFile.close();
+    }
 
     m_writeStopped = false;
     m_writer = new QProcess(this);
     m_writer->setWorkingDirectory(m_repo.root());
+    if (m_agent.id == u"opencode") {
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("OPENCODE_PERMISSION"), QStringLiteral("{\"*\":\"deny\"}"));
+        env.insert(QStringLiteral("OPENCODE_DISABLE_DEFAULT_PLUGINS"), QStringLiteral("true"));
+        m_writer->setProcessEnvironment(env);
+    }
     auto *limit = new QTimer(m_writer);   // a stuck agent shouldn't hold the dialog forever
     limit->setSingleShot(true);
     connect(limit, &QTimer::timeout, m_writer, &QProcess::kill);
@@ -1105,6 +1146,17 @@ void CommitWindow::writeMessage()
         QString reply = m_agent.replyInFile()
             ? [&] { QFile f(replyFile); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); }()
             : QString::fromUtf8(m_writer->readAllStandardOutput());
+        if (m_agent.id == u"opencode") {
+            QString text;
+            for (const QByteArray &line : reply.toUtf8().split('\n')) {
+                const QJsonDocument event = QJsonDocument::fromJson(line);
+                if (!event.isObject() || event.object().value(QStringLiteral("type")).toString() != u"text")
+                    continue;
+                const QJsonObject part = event.object().value(QStringLiteral("part")).toObject();
+                text += part.value(QStringLiteral("text")).toString();
+            }
+            reply = text;
+        }
         const QString err = QString::fromUtf8(m_writer->readAllStandardError()).trimmed();
         m_writer->deleteLater();
         m_writer = nullptr;
@@ -1154,7 +1206,8 @@ void CommitWindow::writeMessage()
     m_message->setReadOnly(true);
     m_status->setText(tr("Writing a message with %1…").arg(m_agent.name));
     m_writer->start(m_agent.program(), m_agent.arguments(replyFile));
-    m_writer->write(prompt.toUtf8());
+    if (m_agent.id != u"opencode")
+        m_writer->write(prompt.toUtf8());
     m_writer->closeWriteChannel();
     updateWriteButton();
     updateCounts();
