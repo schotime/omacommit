@@ -1,7 +1,9 @@
 #include "CommitWindow.h"
 #include "GitRepo.h"
 #include "LogWindow.h"
+#ifdef OG_PORTAL
 #include "Portal.h"
+#endif
 #include "ResolveWindow.h"
 #include "Style.h"
 #include "Theme.h"
@@ -16,7 +18,13 @@
 
 #include <cstdio>
 
+#ifdef Q_OS_WIN
+#include <io.h>
+#define isatty _isatty
+#define STDERR_FILENO _fileno(stderr)
+#else
 #include <unistd.h>
+#endif
 
 #ifndef OG_VERSION
 #define OG_VERSION "0.0.0"
@@ -108,7 +116,9 @@ int main(int argc, char *argv[])
         // desktop's file chooser when there is one.
         const QString title = QObject::tr("Choose a Git repository");
         QString picked;
+#ifdef OG_PORTAL
         if (Portal::pickDirectory(title, QDir::homePath(), &picked) == Portal::Result::Unavailable)
+#endif
             picked = QFileDialog::getExistingDirectory(nullptr, title, QDir::homePath());
         if (picked.isEmpty())
             return 0;

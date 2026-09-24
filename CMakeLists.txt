@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets DBus)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 add_executable(og
     src/main.cpp
@@ -20,11 +20,17 @@ add_executable(og
     src/LogGraph.cpp
     src/LogWindow.cpp
     src/ResolveWindow.cpp
-    src/Portal.cpp
 )
 # The app icon, compiled in for the window icon (installed below for launchers).
 qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)
-target_link_libraries(og PRIVATE Qt6::Widgets Qt6::DBus)
+target_link_libraries(og PRIVATE Qt6::Widgets)
+# The desktop's file chooser (XDG portal, over D-Bus): Linux only.
+if(UNIX AND NOT APPLE)
+    find_package(Qt6 REQUIRED COMPONENTS DBus)
+    target_sources(og PRIVATE src/Portal.cpp)
+    target_link_libraries(og PRIVATE Qt6::DBus)
+    target_compile_definitions(og PRIVATE OG_PORTAL)
+endif()
 target_compile_definitions(og PRIVATE OG_VERSION="${PROJECT_VERSION}")
 
 include(GNUInstallDirs)

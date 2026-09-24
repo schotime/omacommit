@@ -143,9 +143,10 @@ GitResult GitRepo::createBranch(const QString &name) const
 
 QString GitRepo::emptyTree() const
 {
-    // Works for both SHA-1 and SHA-256 repositories.
+    // Works for both SHA-1 and SHA-256 repositories. Empty stdin rather than
+    // /dev/null, which is not a file on Windows.
     return QString::fromUtf8(run({QStringLiteral("hash-object"), QStringLiteral("-t"), QStringLiteral("tree"),
-                                  QStringLiteral("/dev/null")}).out).trimmed();
+                                  QStringLiteral("--stdin")}).out).trimmed();
 }
 
 QVector<FileEntry> GitRepo::status() const
