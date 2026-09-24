@@ -626,6 +626,9 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
             m_prefInline = true;
             m_forceSplit = false;
         }
+    // Whether ↑↓ have somewhere to go depends on what is in view.
+    for (DiffPane *pane : {m_right, m_inline})
+        connect(pane->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { updateNav(); });
         QSettings().setValue(QStringLiteral("diff/inline"), m_prefInline);
         updateMode();
     });
@@ -1016,11 +1019,29 @@ void DiffView::gotoRow(int row)
     pane->verticalScrollBar()->setValue(qMax(0, line - visible / 4));
 }
 
+bool DiffView::rowInView(int row) const
+{
+    const bool inl = m_stack->currentIndex() == 2;
+    const DiffPane *pane = inl ? m_inline : m_right;
+    const int line = inl ? m_rowToInline.value(row, 0) : row;
+    const int top = pane->verticalScrollBar()->value();
+    const int visible = qMax(1, pane->viewport()->height() / qMax(1, pane->fontMetrics().lineSpacing()));
+    return line >= top && line < top + visible;
+}
+
+// The current change scrolled out of sight: back to it first. That is the
+// only move there is when the file has a single change.
+bool DiffView::currentAway() const
+{
+    return m_current >= 0 && m_current < m_changeStarts.size() && !rowInView(m_changeStarts.at(m_current));
+}
+
 void DiffView::nextChange()
 {
     if (m_changeStarts.isEmpty())
         return;
-    m_current = qMin(int(m_changeStarts.size()) - 1, m_current + 1);
+    if (!currentAway())
+        m_current = qMin(int(m_changeStarts.size()) - 1, m_current + 1);
     gotoRow(m_changeStarts.at(m_current));
     updateNav();
 }
@@ -1029,15 +1050,18 @@ void DiffView::prevChange()
 {
     if (m_changeStarts.isEmpty())
         return;
-    m_current = qMax(0, m_current - 1);
+    if (!currentAway())
+        m_current = qMax(0, m_current - 1);
     gotoRow(m_changeStarts.at(m_current));
     updateNav();
 }
 
 void DiffView::updateNav()
 {
-    m_prev->setEnabled(m_current > 0);
-    m_next->setEnabled(!m_changeStarts.isEmpty() && m_current < int(m_changeStarts.size()) - 1);
+    const bool any = !m_changeStarts.isEmpty() && showingRows();
+    const bool away = any && currentAway();
+    m_prev->setEnabled(any && (m_current > 0 || away));
+    m_next->setEnabled(any && (m_current < int(m_changeStarts.size()) - 1 || away));
 }
 
 // ---------------------------------------------------------------- editing the right side

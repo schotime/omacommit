@@ -339,6 +339,10 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
                     k = i;
         }
         if (k >= 0)
+        // Nothing further that way (a single conflict, say): back to the one
+        // being worked on, in case it was scrolled out of sight.
+        if (k < 0)
+            k = targetConflict();
             gotoConflict(k);
     };
     connect(m_nextBtn, &QToolButton::clicked, this, [step] { step(1); });

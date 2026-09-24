@@ -213,6 +213,8 @@ private:
     DiffPane *m_inline;
     QLabel *m_inlineCaption;
     ImageCompare *m_image;
+    bool rowInView(int row) const;
+    bool currentAway() const;
     QToolButton *m_imageBtn;
     ImageFetch m_imageFetch;
     QByteArray m_textDiff;         // an SVG's diff, to switch back to from its picture
