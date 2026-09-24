@@ -307,6 +307,12 @@ QString Theme::styleSheet() const
 QWidget { background: @bg@; color: @fg@; font-family: "@uiFamily@"; font-size: @uiSize@pt; }
 QPlainTextEdit { font-family: "@codeFamily@"; font-size: @codeSize@pt; }
 QLabel#title { font-size: @titleSize@pt; font-weight: 500; }
+QPushButton#tab, QPushButton#tab:hover, QPushButton#tab:pressed {
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    padding: 0 0 3px 0; font-size: @titleSize@pt; font-weight: 500; color: @muted@;
+}
+QPushButton#tab:hover { color: @fg@; }
+QPushButton#tab[current="true"] { color: @fg@; border-bottom: 2px solid @accent@; }
 QLabel#muted { color: @muted@; }
 QLabel#section { color: @muted@; font-weight: 500; }
 QPlainTextEdit, QLineEdit, QTreeWidget {

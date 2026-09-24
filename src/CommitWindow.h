@@ -11,6 +11,7 @@
 #include <memory>
 
 class MessageEdit;
+class PageTabs;
 class QCheckBox;
 class QLabel;
 class QLineEdit;
@@ -30,6 +31,7 @@ public:
 protected:
     void closeEvent(QCloseEvent *e) override;
     void showEvent(QShowEvent *e) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void refresh();
@@ -80,9 +82,9 @@ private:
 
     QSplitter *m_split = nullptr;
     bool m_sized = false;
+    PageTabs *m_tabs;
     QLabel *m_header;
     QLabel *m_repoPath;
-    QToolButton *m_logBtn;
     QToolButton *m_historyBtn;
     QToolButton *m_writeBtn;
     Agent m_agent;

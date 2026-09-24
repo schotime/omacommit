@@ -4,6 +4,7 @@
 #include "ElidedLabel.h"
 #include "ResolveWindow.h"
 #include "OgWindow.h"
+#include "PageTabs.h"
 #include "Theme.h"
 
 #include <QCheckBox>
@@ -196,15 +197,13 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     setWindowTitle(tr("Log — %1").arg(QFileInfo(root).fileName()));
 
     // --- widgets
+    m_tabs = new PageTabs(OgWindow::Log, this);
     m_header = new QLabel;
-    m_header->setObjectName(QStringLiteral("title"));
     m_header->setTextFormat(Qt::RichText);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
     m_allBranches = new QCheckBox(tr("All branches"));
-    m_commitBtn = new QToolButton;
-    m_commitBtn->setText(tr("Commit"));
-    m_commitBtn->setToolTip(tr("Show og commit in this window (Ctrl+L or Ctrl+Tab)"));
+
     m_allBranches->setChecked(true);
     m_allBranches->setToolTip(tr("Show every local and remote branch and tag, not only the current branch"));
 
@@ -254,20 +253,19 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     auto *cl = new QVBoxLayout(commitsPane);
     cl->setContentsMargins(14, 12, 14, 6);
     cl->setSpacing(8);
-    auto *head = new QHBoxLayout;
-    auto *titles = new QVBoxLayout;
-    titles->setSpacing(2);
-    titles->addWidget(m_header);
-    titles->addWidget(m_repoPath);
-    head->addLayout(titles, 1);
-    // The page switch in the pane's top-right corner, as on the commit page;
-    // the branch toggle under it, level with the path.
-    auto *side = new QVBoxLayout;
-    side->setSpacing(2);
-    side->addWidget(m_commitBtn, 0, Qt::AlignRight);
-    side->addStretch();
-    side->addWidget(m_allBranches, 0, Qt::AlignRight);
-    head->addLayout(side);
+    // Commit · Log (with the branch toggle across from it), then whose history
+    // and where.
+    auto *tabsRow = new QHBoxLayout;
+    tabsRow->addWidget(m_tabs, 1);
+    tabsRow->addWidget(m_allBranches);
+    auto *where = new QHBoxLayout;
+    where->setSpacing(10);
+    where->addWidget(m_header);
+    where->addWidget(m_repoPath, 1);
+    auto *head = new QVBoxLayout;
+    head->setSpacing(4);
+    head->addLayout(tabsRow);
+    head->addLayout(where);
     cl->addLayout(head);
     cl->addWidget(m_commits, 1);
 
@@ -301,11 +299,13 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     leftSplit->setSizes({460, 150, 250});
 
     auto *split = new QSplitter(Qt::Horizontal);
+    split->setObjectName(QStringLiteral("pageSplit"));   // kept level with the other pages'
     split->addWidget(leftSplit);
     split->addWidget(m_diff);
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
-    split->setStretchFactor(0, 1);
+    // Resizing the window resizes the right side; the left pane keeps its width.
+    split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 1);
     split->setSizes({700, 700});   // half: the commit table is what you read here
 
@@ -333,7 +333,6 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { reload(); });
     for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
         new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Commit); });
-    connect(m_commitBtn, &QToolButton::clicked, this, [this] { OgWindow::go(this, OgWindow::Commit); });
     connect(m_commits, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
         if (m_log.value(it->data(0, RowRole).toInt()).hash == WorkingHash)
             OgWindow::go(this, OgWindow::Commit);
@@ -356,9 +355,10 @@ void LogWindow::showEvent(QShowEvent *e)
 void LogWindow::reload()
 {
     const QString branch = m_repo.branch();
-    m_header->setText(m_allBranches->isChecked() ? tr("History of all branches")
-                      : branch.isEmpty()         ? tr("History of <i>detached HEAD</i>")
-                                                 : tr("History of %1").arg(Theme::strong(branch)));
+    m_header->setText(m_allBranches->isChecked() ? tr("all branches")
+                      : branch.isEmpty()         ? tr("of <i>detached HEAD</i>")
+                                                 : tr("of %1").arg(Theme::strong(branch)));
+    m_tabs->setConflicts(!m_repo.unmerged().isEmpty());
 
     const QString keep = m_shownCommit;
     m_refs = m_repo.refsByCommit();

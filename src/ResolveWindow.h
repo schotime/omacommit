@@ -76,7 +76,6 @@ private:
     // That is git's HEAD side, except in a rebase, where it is the incoming one.
     bool m_mineIsIncoming = false;
 
-    QLabel *m_title;
     QLabel *m_subtitle;
     QTreeWidget *m_files;
     QLabel *m_hintLabel;

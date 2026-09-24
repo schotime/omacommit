@@ -10,7 +10,7 @@ class DiffView;
 class QCheckBox;
 class QLabel;
 class QPlainTextEdit;
-class QToolButton;
+class PageTabs;
 class QTreeWidget;
 
 // History browser: the commit graph with branch and tag names on the left, the
@@ -52,7 +52,7 @@ private:
     QLabel *m_header;
     QLabel *m_repoPath;
     QCheckBox *m_allBranches;
-    QToolButton *m_commitBtn;
+    PageTabs *m_tabs;
     bool m_shownBefore = false;
     bool m_working = false;   // the first row is the working changes, not a commit
     QTreeWidget *m_commits;

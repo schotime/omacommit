@@ -4,6 +4,7 @@
 #include "ResolveWindow.h"
 
 #include <QCloseEvent>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -41,9 +42,35 @@ void OgWindow::go(Page p, const QString &file)
     }
     if (m_stack->count() == 1)
         m_home = p;
+    // The divider between the left pane and the diff stays where it was: the
+    // page being shown takes the one being left's.
+    const int left = leftWidth(m_stack->currentWidget());
     m_current = p;
     m_stack->setCurrentWidget(w);
+    setLeftWidth(w, left);
     updateTitle();
+}
+
+static QSplitter *pageSplit(QWidget *page)
+{
+    return page ? page->findChild<QSplitter *>(QStringLiteral("pageSplit")) : nullptr;
+}
+
+int OgWindow::leftWidth(QWidget *page) const
+{
+    QSplitter *s = pageSplit(page);
+    return s && s->isVisible() && !s->sizes().isEmpty() ? s->sizes().constFirst() : -1;
+}
+
+void OgWindow::setLeftWidth(QWidget *page, int left)
+{
+    QSplitter *s = pageSplit(page);
+    if (!s || left <= 0 || s->count() < 2)
+        return;
+    // The stack's width: a page shown for the first time may not be laid out yet.
+    const int total = m_stack->width() - s->handleWidth();
+    if (total > left)
+        s->setSizes({left, total - left});
 }
 
 void OgWindow::go(QWidget *from, Page p, const QString &file)

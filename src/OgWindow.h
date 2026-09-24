@@ -32,6 +32,8 @@ protected:
 private:
     QWidget *page(Page p) const;
     void updateTitle();
+    int leftWidth(QWidget *page) const;
+    void setLeftWidth(QWidget *page, int left);
 
     QString m_root;
     QStackedWidget *m_stack;

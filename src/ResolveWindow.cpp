@@ -5,6 +5,7 @@
 #include "ElidedLabel.h"
 #include "FlowLayout.h"
 #include "OgWindow.h"
+#include "PageTabs.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -95,8 +96,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     describeSides();
 
     // --- left: what is going on, and the files
-    m_title = new QLabel(tr("Resolve conflicts"));
-    m_title->setObjectName(QStringLiteral("title"));
+    auto *tabs = new PageTabs(OgWindow::Resolve, this);
     m_subtitle = new QLabel(m_opText);
     m_subtitle->setObjectName(QStringLiteral("muted"));
     m_subtitle->setWordWrap(true);
@@ -138,8 +138,8 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     ll->setContentsMargins(14, 12, 14, 12);
     ll->setSpacing(8);
     auto *head = new QVBoxLayout;
-    head->setSpacing(2);
-    head->addWidget(m_title);
+    head->setSpacing(4);
+    head->addWidget(tabs);
     head->addWidget(m_subtitle);
     head->addWidget(repoPath);
     ll->addLayout(head);
@@ -281,12 +281,14 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_stack->addWidget(m_message);
 
     auto *split = new QSplitter(Qt::Horizontal);
+    split->setObjectName(QStringLiteral("pageSplit"));   // kept level with the other pages'
     split->addWidget(left);
     split->addWidget(m_stack);
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
-    split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 3);
+    // Resizing the window resizes the right side; the left pane keeps its width.
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
     split->setSizes({350, 1050});   // a quarter: the list only needs file names
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);

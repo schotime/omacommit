@@ -21,6 +21,7 @@ add_executable(og
     src/LogWindow.cpp
     src/ResolveWindow.cpp
     src/OgWindow.cpp
+    src/PageTabs.cpp
 )
 # The app icon, compiled in for the window icon (installed below for launchers).
 qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)

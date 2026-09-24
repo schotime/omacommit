@@ -4,6 +4,7 @@
 #include "MessageEdit.h"
 #include "ResolveWindow.h"
 #include "OgWindow.h"
+#include "PageTabs.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -19,6 +20,8 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QStyle>
 #include <QProcess>
 #include <QPushButton>
 #include <QScrollBar>
@@ -56,8 +59,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     setWindowTitle(tr("Commit — %1").arg(QFileInfo(root).fileName()));
 
     // --- widgets
+    m_tabs = new PageTabs(OgWindow::Commit, this);
     m_header = new QLabel;
-    m_header->setObjectName(QStringLiteral("title"));
     m_header->setTextFormat(Qt::RichText);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
@@ -67,10 +70,6 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setVisible(!m_agent.id.isEmpty());
-
-    m_logBtn = new QToolButton;
-    m_logBtn->setText(tr("Log"));
-    m_logBtn->setToolTip(tr("Show the history in this window (Ctrl+L or Ctrl+Tab; again to come back)"));
 
     m_historyBtn = new QToolButton;
     m_historyBtn->setText(tr("Recent ▾"));
@@ -104,7 +103,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_files->setItemsExpandable(false);
     m_files->setIndentation(0);
     m_files->setUniformRowHeights(true);
-    m_files->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Several files can be selected (Shift/Ctrl-click); ticking one of them
+    // ticks them all. The diff shows the one clicked last.
+    m_files->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_files->viewport()->installEventFilter(this);   // checkbox clicks keep the selection
     m_files->header()->setStretchLastSection(false);
     m_files->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_files->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -130,13 +132,15 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     l->setContentsMargins(14, 12, 14, 12);
     l->setSpacing(8);
 
-    auto *titles = new QVBoxLayout;
-    titles->setSpacing(2);
-    titles->addWidget(m_header);
-    titles->addWidget(m_repoPath);
-    auto *head = new QHBoxLayout;
-    head->addLayout(titles, 1);
-    head->addWidget(m_logBtn, 0, Qt::AlignTop);   // the pane's top-right corner
+    // Commit · Log, then what it commits to and where.
+    auto *where = new QHBoxLayout;
+    where->setSpacing(10);
+    where->addWidget(m_header);
+    where->addWidget(m_repoPath, 1);
+    auto *head = new QVBoxLayout;
+    head->setSpacing(4);
+    head->addWidget(m_tabs);
+    head->addLayout(where);
     l->addLayout(head);
     l->addSpacing(4);
 
@@ -171,12 +175,14 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     l->addLayout(actions);
 
     auto *split = m_split = new QSplitter(Qt::Horizontal);
+    split->setObjectName(QStringLiteral("pageSplit"));   // kept level with the other pages'
     split->addWidget(left);
     split->addWidget(m_diff);
     split->setChildrenCollapsible(false);
     split->setHandleWidth(1);
-    split->setStretchFactor(0, 2);
-    split->setStretchFactor(1, 3);
+    // Resizing the window resizes the right side; the left pane keeps its width.
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
     split->setSizes({520, 880});   // provisional; showEvent sizes it for the message
 
     auto *outer = new QVBoxLayout(this);
@@ -189,11 +195,18 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_files, &QTreeWidget::currentItemChanged, this, &CommitWindow::showCurrentDiff);
     m_files->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_files, &QWidget::customContextMenuRequested, this, &CommitWindow::showFileMenu);
-    connect(m_files, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *, int column) {
-        if (!m_updatingChecks && column == 0) {
-            updateSelectAllState();
-            updateCounts();
+    connect(m_files, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *it, int column) {
+        if (m_updatingChecks || column != 0)
+            return;
+        if (it->isSelected()) {
+            m_updatingChecks = true;
+            for (QTreeWidgetItem *s : m_files->selectedItems())
+                if (entryOf(s))
+                    s->setCheckState(0, it->checkState(0));
+            m_updatingChecks = false;
         }
+        updateSelectAllState();
+        updateCounts();
     });
     connect(m_selectAll, &QCheckBox::clicked, this, &CommitWindow::toggleAll);
     connect(m_filter, &QLineEdit::textChanged, this, &CommitWindow::applyFilter);
@@ -201,7 +214,6 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_pushBtn, &QPushButton::clicked, this, [this] { commit(true); });
     connect(m_historyMenu, &QMenu::aboutToShow, this, &CommitWindow::rebuildHistoryMenu);
     connect(m_writeBtn, &QToolButton::clicked, this, &CommitWindow::writeMessage);
-    connect(m_logBtn, &QToolButton::clicked, this, [this] { OgWindow::go(this, OgWindow::Log); });
     updateWriteButton();
     connect(&Theme::instance(), &Theme::changed, this, &CommitWindow::applyTheme);
 
@@ -220,7 +232,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     });
     new QShortcut(QKeySequence(Qt::Key_Space), m_files, [this] {
         if (auto *it = m_files->currentItem(); it && entryOf(it))
-            it->setCheckState(0, it->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+            it->setCheckState(0, it->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);   // the selection follows
     }, Qt::WidgetShortcut);
 
     // Restore an unsent message from last time.
@@ -309,6 +321,7 @@ void CommitWindow::refresh()
         });
     }
     m_entries += m_repo.unstagedFiles();
+    m_tabs->setConflicts(std::any_of(m_entries.begin(), m_entries.end(), [](const FileEntry &e) { return e.conflicted(); }));
     // Files you have staged part of. (While amending, being in the last commit
     // doesn't count: its newer changes are still meant to go in by default.)
     QSet<QString> stagedPaths;
@@ -317,8 +330,7 @@ void CommitWindow::refresh()
             stagedPaths.insert(e.path);
 
     const QString branch = m_repo.branch();
-    m_header->setText(branch.isEmpty() ? tr("Commit on <i>detached HEAD</i>")
-                                       : tr("Commit to %1").arg(Theme::strong(branch)));
+    m_header->setText(branch.isEmpty() ? tr("on <i>detached HEAD</i>") : tr("to %1").arg(Theme::strong(branch)));
     if (m_repo.isMerging())
         m_header->setText(m_header->text() + tr(" <i>(merge)</i>"));
 
@@ -1436,6 +1448,27 @@ void CommitWindow::saveToHistory(const QString &message)
 // The left side is made wide enough for a 72-column message -- the guide the
 // message box draws -- but kept between 30% and 45% of the window, so the diff
 // always keeps most of it. Worked out once, when the font and width are known.
+// A click on the checkbox of one of several selected files would, left to the
+// view, also narrow the selection to that file. Tick them all and keep it.
+bool CommitWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_files->viewport()
+        && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease
+            || event->type() == QEvent::MouseButtonDblClick)) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        QTreeWidgetItem *it = m_files->itemAt(me->position().toPoint());
+        const int box = m_files->style()->pixelMetric(QStyle::PM_IndicatorWidth, nullptr, m_files) + 10;
+        const bool onBox = it && entryOf(it) && me->button() == Qt::LeftButton && me->modifiers() == Qt::NoModifier
+                        && me->position().x() < m_files->visualItemRect(it).left() + box;
+        if (onBox && it->isSelected() && m_files->selectedItems().size() > 1) {
+            if (event->type() == QEvent::MouseButtonRelease)
+                it->setCheckState(0, it->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+            return true;   // the selection stays as it is
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void CommitWindow::showEvent(QShowEvent *e)
 {
     QWidget::showEvent(e);

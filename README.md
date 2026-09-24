@@ -52,9 +52,10 @@ chooser (the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal
 A directory literally named `c`, `l` or `r` needs a path prefix (`og ./l`).
 
 They are pages of one window, so you can move between them without anything
-opening or closing: **Log** / **Commit** buttons (or Ctrl+L / Ctrl+Tab) switch between the
-commit dialog and the history, and a conflicted file's **Resolve…** opens
-resolve in place on that file. Each page stays as you left it — message,
+opening or closing. The top of each page is a row of tabs — **Commit · Log**,
+plus **Resolve** while there are conflicts — with the page you're on as the
+heading; click another to switch. Ctrl+L or Ctrl+Tab switch between commit and
+the log, and a conflicted file's **Resolve…** opens resolve on that file. Each page stays as you left it — message,
 ticks, selection, unsaved edits. Esc goes back to the page og was started on,
 and closes the window from there.
 
