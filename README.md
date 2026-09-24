@@ -209,6 +209,10 @@ them; then **Open commit dialog** starts from git's prepared *Revert "…"*
 message, or **Resolve…** if undoing it conflicts with later changes. A merge is
 undone relative to its first parent. History loads as you scroll, and *All branches*
 switches between every branch, remote and tag and only the current branch.
+Select several commits to see them combined: a run of neighbouring commits
+(Shift-click) shows what they did together, from before the oldest to the
+newest; commits picked apart (Ctrl-click) are compared with each other; and
+with the *Working changes* row included, the working tree is the newer end.
 F5 reloads, Ctrl+L or Ctrl+Tab goes to the commit dialog, Esc goes back (or closes).
 
 ## Resolve

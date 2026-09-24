@@ -7,6 +7,8 @@
 #include "PageTabs.h"
 #include "Theme.h"
 
+#include <algorithm>
+
 #include <QCheckBox>
 #include <QDateTime>
 #include <QEvent>
@@ -212,7 +214,9 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_commits->setHeaderLabels({tr("Graph"), tr("Author"), tr("Date"), tr("Commit")});
     m_commits->setRootIsDecorated(false);
     m_commits->setUniformRowHeights(true);
-    m_commits->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Several commits can be selected (Shift for a range, Ctrl for any two):
+    // their files and diffs are then shown combined, oldest to newest.
+    m_commits->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_commits->setItemDelegateForColumn(0, new GraphDelegate(this));
     m_commits->viewport()->installEventFilter(this);   // hide columns as it narrows
     m_commits->header()->setStretchLastSection(false);
@@ -314,7 +318,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     outer->addWidget(split);
 
     // --- signals
-    connect(m_commits, &QTreeWidget::currentItemChanged, this, &LogWindow::showCommit);
+    connect(m_commits, &QTreeWidget::itemSelectionChanged, this, &LogWindow::showCommit);
     m_commits->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_commits, &QWidget::customContextMenuRequested, this, &LogWindow::showCommitMenu);
     m_files->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -450,13 +454,20 @@ QString LogWindow::baseOf(const LogCommit &c) const
 
 void LogWindow::showCommit()
 {
-    auto *it = m_commits->currentItem();
+    const QList<QTreeWidgetItem *> selected = m_commits->selectedItems();
+    if (selected.size() > 1) {
+        showComparison(selected);
+        return;
+    }
+    auto *it = selected.isEmpty() ? m_commits->currentItem() : selected.constFirst();
     if (!it)
         return;
     const LogCommit &c = m_log.at(it->data(0, RowRole).toInt());
     if (c.hash == m_shownCommit)
         return;
     m_shownCommit = c.hash;
+    m_span = c.hash == WorkingHash ? Span{QStringLiteral("HEAD"), QString(), true}
+                                   : Span{baseOf(c), c.hash, false};
     if (c.hash == WorkingHash) {
         showWorkingChanges();
         return;
@@ -479,6 +490,54 @@ void LogWindow::showCommit()
     if (m_files->topLevelItemCount() == 0)
         m_diff->showMessage({}, c.parents.size() > 1 ? tr("Merge with no changes against its first parent")
                                                      : tr("No file changes"));
+}
+
+// Several commits selected. A run of them next to each other is shown as what
+// they did together -- from before the oldest to the newest, as if squashed;
+// commits picked apart (Ctrl) are compared with each other, older to newer.
+// The working changes row, selected too, makes the working tree the newer end.
+void LogWindow::showComparison(const QList<QTreeWidgetItem *> &selected)
+{
+    QVector<int> rows;
+    for (QTreeWidgetItem *it : selected)
+        rows << it->data(0, RowRole).toInt();
+    std::sort(rows.begin(), rows.end());   // newest first, as listed
+    bool together = true;
+    for (int i = 1; i < rows.size(); ++i)
+        together = together && rows.at(i) == rows.at(i - 1) + 1;
+    const LogCommit &newest = m_log.at(rows.constFirst());
+    const LogCommit &oldest = m_log.at(rows.constLast());
+    Span span;
+    span.working = newest.hash == WorkingHash;
+    span.from = together ? baseOf(oldest) : oldest.hash;
+    span.to = span.working ? QString() : newest.hash;
+    const QString key = span.from + QStringLiteral("..") + (span.working ? QStringLiteral("working") : span.to);
+    if (key == m_shownCommit)
+        return;
+    m_shownCommit = key;
+    m_span = span;
+
+    const QString newer = span.working ? tr("the working tree") : newest.hash.left(8);
+    const int commits = int(rows.size()) - (span.working ? 1 : 0);
+    QString details = !together     ? tr("%1 compared with %2.").arg(oldest.hash.left(8), newer)
+                      : span.working && commits == 1
+                          ? tr("A commit and the working changes, together: from before %1 to the working tree.")
+                                .arg(oldest.hash.left(8))
+                      : span.working
+                          ? tr("%1 commits and the working changes, together: from before %2 to the working tree.")
+                                .arg(commits).arg(oldest.hash.left(8))
+                                     : tr("What the %1 selected commits did together: from before %2 to %3.")
+                                           .arg(commits).arg(oldest.hash.left(8), newer);
+    details += QStringLiteral("\n");
+    for (int r : rows) {
+        const LogCommit &c = m_log.at(r);
+        details += QStringLiteral("\n") + (c.hash == WorkingHash ? tr("          Working changes") : c.hash.left(8) + QStringLiteral("  ") + c.subject);
+    }
+    m_details->setPlainText(details);
+    m_commitFiles = span.working ? m_repo.workingChanges(span.from) : m_repo.changedFiles(span.from, span.to);
+    listCommitFiles();
+    if (m_files->topLevelItemCount() == 0)
+        m_diff->showMessage({}, tr("No differences"));
 }
 
 // Everything not committed yet, against HEAD: staged and unstaged alike, and
@@ -536,32 +595,16 @@ void LogWindow::listCommitFiles()
 void LogWindow::showFileDiff()
 {
     auto *fi = m_files->currentItem();
-    auto *ci = m_commits->currentItem();
-    if (!fi || !ci)
+    if (!fi)
         return;
-    const LogCommit &c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
     m_diff->setFileName(f.path);   // the language for syntax colours
-    if (c.hash == WorkingHash) {
-        const QString before = QStringLiteral("HEAD:") + (f.oldPath.isEmpty() ? f.path : f.oldPath);
-        const QString onDisk = QDir(m_repo.root()).filePath(f.path);
-        const ImageFetch images = [this, before, onDisk] {
-            ImageSides s;
-            const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
-            s.hasBefore = b.ok();
-            s.before = b.out;
-            QFile file(onDisk);
-            s.hasAfter = file.open(QIODevice::ReadOnly);
-            s.after = file.readAll();
-            return s;
-        };
-        m_diff->showDiff(fi->text(0), m_repo.diffWorking(f, QStringLiteral("HEAD")), false, images);
-        return;
-    }
-    // For an image: the file in the parent (under its old name) and in the commit.
-    const QString before = baseOf(c) + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
-    const QString after = c.hash + QLatin1Char(':') + f.path;
-    const ImageFetch images = [this, before, after] {
+    // For an image: the file at the older end (under its old name) and at the
+    // newer one -- a commit, or the working tree.
+    const QString before = m_span.from + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
+    const QString after = m_span.working ? QString() : m_span.to + QLatin1Char(':') + f.path;
+    const QString onDisk = QDir(m_repo.root()).filePath(f.path);
+    const ImageFetch images = [this, before, after, onDisk] {
         auto blob = [this](const QString &rev, QByteArray *data) {
             const GitResult r = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), rev});
             *data = r.out;
@@ -569,10 +612,17 @@ void LogWindow::showFileDiff()
         };
         ImageSides s;
         s.hasBefore = blob(before, &s.before);
-        s.hasAfter = blob(after, &s.after);
+        if (after.isEmpty()) {
+            QFile file(onDisk);
+            s.hasAfter = file.open(QIODevice::ReadOnly);
+            s.after = file.readAll();
+        } else {
+            s.hasAfter = blob(after, &s.after);
+        }
         return s;
     };
-    m_diff->showDiff(fi->text(0), m_repo.diffBetween(baseOf(c), c.hash, f), false, images);
+    const QByteArray diff = m_span.working ? m_repo.diffWorking(f, m_span.from) : m_repo.diffBetween(m_span.from, m_span.to, f);
+    m_diff->showDiff(fi->text(0), diff, false, images);
 }
 
 void LogWindow::showCommitMenu(const QPoint &pos)
@@ -604,6 +654,11 @@ void LogWindow::showFileMenu(const QPoint &pos)
     const LogCommit c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry f = m_commitFiles.at(fi->data(0, RowRole).toInt());
     QMenu menu(this);
+    if (m_commits->selectedItems().size() > 1) {   // a comparison, not one commit's change
+        menu.addAction(tr("Revert… (select a single commit)"))->setEnabled(false);
+        menu.exec(m_files->viewport()->mapToGlobal(pos));
+        return;
+    }
     QAction *revert = nullptr;
     if (c.hash == WorkingHash) {
         revert = menu.addAction(tr("Revert to the last commit…"));

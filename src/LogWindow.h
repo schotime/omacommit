@@ -10,6 +10,7 @@ class DiffView;
 class QCheckBox;
 class QLabel;
 class QPlainTextEdit;
+class QTreeWidgetItem;
 class PageTabs;
 class QTreeWidget;
 
@@ -34,6 +35,7 @@ private:
     void loadMore();
     void showCommit();
     void showWorkingChanges();
+    void showComparison(const QList<QTreeWidgetItem *> &selected);
     void listCommitFiles();
     void showFileDiff();
     void showCommitMenu(const QPoint &pos);
@@ -66,7 +68,14 @@ private:
     QHash<QString, QVector<RefLabel>> m_refs;
     GraphLayout m_layout;
     QVector<FileEntry> m_commitFiles;
-    QString m_shownCommit;
+    QString m_shownCommit;   // what the files and diff show: a hash, or a comparison's span
+    // The two ends the files and diffs are between: from `from` to `to`, or
+    // to the working tree.
+    struct Span {
+        QString from, to;
+        bool working = false;
+    };
+    Span m_span;
     int m_colWidth[4] = {0, 0, 0, 0};   // what Author, Date and Commit need
     int m_subjectMin = 0;      // the Graph/subject column's default floor
     int m_subjectDragged = 0;  // a width set by dragging the column, kept from then on
