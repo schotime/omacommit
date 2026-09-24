@@ -13,13 +13,16 @@ struct FileEntry {
     QString oldPath;          // set for renames/copies
     QChar index = u' ';       // porcelain X
     QChar worktree = u' ';    // porcelain Y
-    bool inLastCommit = false;   // part of the commit being amended
-    QChar commitStatus = u' ';   // what that commit did to it: M, A, D, R, ...
+    QChar commitStatus = u' ';   // in a commit's file list: what it did to it (M, A, D, R, ...)
+    // The commit window lists staged changes (the index against the commit's
+    // base: index set, worktree ' ') apart from unstaged ones (the working
+    // tree against the index: index ' ', or '?' when untracked, or both set
+    // for a conflict).
+    bool staged = false;
 
     bool untracked() const { return index == u'?'; }
-    bool worktreeChange() const { return index != u' ' || worktree != u' '; }
+    bool conflicted() const;
     QString statusText() const;
-    QString worktreeStatusText() const;
 };
 
 struct LogCommit {
@@ -90,7 +93,26 @@ public:
     GitResult createBranch(const QString &name) const;
 
     QVector<FileEntry> status() const;
-    QVector<FileEntry> lastCommitFiles() const;
+    // The commit window's two lists. `base` is what the commit builds on:
+    // HEAD, or its parent when amending (so the last commit's changes count as
+    // staged), or the empty tree before the first commit.
+    QVector<FileEntry> stagedFiles(const QString &base) const;
+    QVector<FileEntry> unstagedFiles() const;
+    QByteArray diffStaged(const FileEntry &f, const QString &base) const;     // base -> index
+    QByteArray diffUnstaged(const FileEntry &f) const;                        // index -> working tree
+    // Everything not committed yet -- staged, unstaged and untracked (status
+    // '?') -- against `base`, and one file of it: the log's "Working changes".
+    QVector<FileEntry> workingChanges(const QString &base) const;
+    QByteArray diffWorking(const FileEntry &f, const QString &base) const;
+    QString commitBase(bool amend) const;
+    // The index's copy of a file; `exists` false when the index has none.
+    QByteArray indexBlob(const QString &path, bool *exists = nullptr) const;
+    // Puts `data` in the index as `path` -- staging or unstaging part of it.
+    GitResult setIndexContent(const QString &path, const QByteArray &data) const;
+    // A scratch index for the commit: `base`, plus the index's version of
+    // `fromIndex` and the working tree's of `fromWorktree`.
+    GitResult prepareCommitIndex(const QString &indexFile, const QString &base, const QStringList &fromIndex,
+                                 const QStringList &fromWorktree) const;
     QVector<FileEntry> changedFiles(const QString &from, const QString &to) const;
     QByteArray diffBetween(const QString &from, const QString &to, const FileEntry &f) const;
 
@@ -112,14 +134,12 @@ public:
                                          const QByteArray &newText) const;
     QString headParent() const;
     QString scratchIndexPath() const;
-    GitResult prepareAmendIndex(const QString &indexFile, const QStringList &include,
-                                const QStringList &exclude) const;
-    void refreshIndexAfterAmend(const QStringList &paths) const;
-    QByteArray diff(const FileEntry &f, const QString &base = QString()) const;
     QByteArray diffFiles(const QString &a, const QString &b) const;
-    QStringList commitArgs(const QStringList &paths, bool amend, bool merging) const;
 
 private:
+    QStringList fullDiffArgs() const;
+    static QVector<FileEntry> parseNameStatus(const QByteArray &out);
+
     static inline bool s_ignoreWhitespace = false;
     QString m_root;
 };

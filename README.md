@@ -51,6 +51,13 @@ chooser (the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal
 
 A directory literally named `c`, `l` or `r` needs a path prefix (`og ./l`).
 
+They are pages of one window, so you can move between them without anything
+opening or closing: **Log** / **Commit** buttons (or Ctrl+L / Ctrl+Tab) switch between the
+commit dialog and the history, and a conflicted file's **Resolve…** opens
+resolve in place on that file. Each page stays as you left it — message,
+ticks, selection, unsaved edits. Esc goes back to the page og was started on,
+and closes the window from there.
+
 `og --help` lists these; `og --version` prints the version.
 
 Hyprland binding that opens it for the repo of the focused terminal
@@ -74,15 +81,33 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 | Ctrl+F | Filter files |
 | Ctrl+S | Save edits made in the diff |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo edits in the diff |
+| Ctrl+L, Ctrl+Tab | Switch between the commit dialog and the log (from resolve: the log) |
 | F5 | Refresh |
-| Esc | Close (the message is kept as a draft) |
+| Esc | Back to the page og started on; there, close (the message is kept as a draft) |
 
 ## How it behaves
 
-- **Checked files are exactly what gets committed.** It uses `git commit --only`,
-  so anything else you had staged stays staged but is left out, as in TortoiseGit.
-  Untracked files start unchecked; checking one adds it.
-- **The diff is working tree vs HEAD**, i.e. what the commit will contain.
+- **Two sections: Staged and Changes.** *Staged* is the index against HEAD;
+  *Changes* is the working tree against the index. A file that is partly staged
+  is in both.
+- **Ticked rows are exactly what gets committed.** A ticked *Staged* row commits
+  what is staged; a ticked *Changes* row commits the file as it is on disk. So
+  for a half-staged file, tick only its staged row to commit just that part, or
+  both for the whole file. Anything unticked stays out — and what is staged but
+  unticked stays staged afterwards. Untracked files start unticked, and so does
+  a file's *Changes* row once part of it is staged. (Mid-merge git commits the
+  whole index, so there ticked changes are staged and everything staged goes.)
+- **Staging is separate from ticking.** Right-click a file under *Changes* →
+  **Stage**, or right-click in its diff → **Stage block** or **Stage line** (or
+  **Stage selected lines** with a selection). Under *Staged*, **Unstage** a
+  file, or **Unstage block / line / selected lines** in its diff. Lines work as
+  in git: staging a new line adds it to the index and staging a removed one
+  takes it out, and side by side a changed line's old and new halves go
+  together — inline, pick either on its own. Staging from the diff is exact even
+  while whitespace is ignored, and if something else changed the file's index
+  entry since the diff was shown, og shows it afresh instead of guessing.
+- **The diff follows the row**: a *Staged* row shows HEAD → index (read-only),
+  a *Changes* row shows index → working tree.
 - **Side by side or inline.** The ◫ / ☰ button next to ↑↓ switches the diff
   between two columns and one (removed lines above added, with old and new line
   numbers), in every window; the choice is remembered. When there isn't room for
@@ -115,7 +140,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   *.md whitespace=-blank-at-eol
   ```
 - **The right side of the diff is editable**, and nothing is written until you
-  save. Type into it directly, or right-click to take from the left (HEAD) as in
+  save. Type into it directly, or right-click to take from the left (the index) as in
   TortoiseGitMerge: *Use left text block*, *Use left line*, *Use text block from
   left before right*, or *Use left whole file*. The diff re-computes as you go.
   Unsaved edits mark the file `●` and show a **Save** button (Ctrl+S); Ctrl+Z /
@@ -123,8 +148,9 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   edits asks whether to save them — a commit takes files from disk, so unsaved
   edits would otherwise be left out. Saving keeps the file's line endings, and if
   the file changed on disk since it was opened, asks before overwriting. Editing
-  is offered for modified and new (untracked or added) UTF-8 files; deleted,
-  renamed and conflicted ones stay read-only.
+  is offered on the *Changes* side of modified and untracked UTF-8 files;
+  staged, deleted and conflicted rows stay read-only. Unsaved edits have to be
+  saved before a block can be staged from them.
 - **It uses the real `git` binary**, so hooks, GPG/SSH signing and credential
   helpers work as they do in your terminal. Commit and push run in the
   background, so slow pre-commit hooks don't freeze the window.
@@ -133,8 +159,8 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   empty to commit to the current branch. A name git rejects, or one that already
   exists, is refused before anything is changed.
 - **✨ Write** asks Omarchy's default coding agent (`omarchy default agent`) to
-  write the message — Claude Code or Codex for now. It sends the diff of the
-  *checked* files (against the parent when amending), the last dozen commit
+  write the message — Claude Code or Codex for now. It sends the diff of what
+  the ticked rows commit (against the parent when amending), the last dozen commit
   subjects so it matches the repository's style, and your draft if you started
   one; the reply replaces the message as one undo step, so Ctrl+Z restores what
   you had. Nothing is sent until you click, and the agent runs one-shot with no
@@ -142,15 +168,16 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   only read what it is given. **■ Stop** cancels it. The button is disabled, with
   the reason on hover, when your default agent isn't installed or isn't one of
   those two.
-- **Amend** pre-fills the last message and adds the files the last commit
-  already contains to the list, marked *In last commit* and checked. Uncheck one
-  and it is taken out of the amended commit: its change returns to the working
-  tree as a pending change rather than being lost. With no files checked, it only
-  rewords. The new-branch box is disabled while amending.
-- **Right-click a file → Revert…** takes it back to the last commit, dropping both
-  staged and unstaged changes, after a confirmation. A newly added file (or the new
-  name of a rename) is only un-added and stays on disk as untracked; untracked files
-  have nothing to revert to and don't offer it.
+- **Amend** pre-fills the last message, and *Staged* becomes *Staged, with the
+  last commit*: the index against HEAD's parent, so the last commit's files are
+  listed there, ticked, first. Untick one and it is taken out of the amended
+  commit; its change stays staged rather than being lost. With nothing else
+  ticked, it only rewords. The new-branch box is disabled while amending.
+- **Right-click a *Changes* row → Discard unstaged changes…** takes the file back
+  to what is staged (or the last commit), after a confirmation. **Right-click a
+  *Staged* row → Revert to the last commit…** drops both staged and unstaged
+  changes; a newly added file (or the new name of a rename) is only un-added and
+  stays on disk as untracked.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
 - The window closes by itself when the working tree ends up clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
@@ -169,7 +196,7 @@ them; then **Open commit dialog** starts from git's prepared *Revert "…"*
 message, or **Resolve…** if undoing it conflicts with later changes. A merge is
 undone relative to its first parent. History loads as you scroll, and *All branches*
 switches between every branch, remote and tag and only the current branch.
-F5 reloads, Esc closes.
+F5 reloads, Ctrl+L or Ctrl+Tab goes to the commit dialog, Esc goes back (or closes).
 
 ## Resolve
 

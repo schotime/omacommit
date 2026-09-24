@@ -10,6 +10,7 @@ class DiffView;
 class QCheckBox;
 class QLabel;
 class QPlainTextEdit;
+class QToolButton;
 class QTreeWidget;
 
 // History browser: the commit graph with branch and tag names on the left, the
@@ -25,13 +26,21 @@ public:
     const QVector<GraphRow> &graph() const { return m_graph; }
     const QHash<QString, QVector<RefLabel>> &refs() const { return m_refs; }
 
+protected:
+    void showEvent(QShowEvent *e) override;
+
 private:
     void reload();
     void loadMore();
     void showCommit();
+    void showWorkingChanges();
+    void listCommitFiles();
     void showFileDiff();
     void showCommitMenu(const QPoint &pos);
     void revertCommit(const LogCommit &c);
+    void showFileMenu(const QPoint &pos);
+    void revertWorkingFile(const FileEntry &f);
+    void revertFileChange(const LogCommit &c, const FileEntry &f);
     void applyTheme();
     void sizeColumns();
     void fitColumns();
@@ -43,6 +52,9 @@ private:
     QLabel *m_header;
     QLabel *m_repoPath;
     QCheckBox *m_allBranches;
+    QToolButton *m_commitBtn;
+    bool m_shownBefore = false;
+    bool m_working = false;   // the first row is the working changes, not a commit
     QTreeWidget *m_commits;
     QPlainTextEdit *m_details;
     QLabel *m_fileCount;

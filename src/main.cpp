@@ -1,10 +1,8 @@
-#include "CommitWindow.h"
 #include "GitRepo.h"
-#include "LogWindow.h"
+#include "OgWindow.h"
 #ifdef OG_PORTAL
 #include "Portal.h"
 #endif
-#include "ResolveWindow.h"
 #include "Style.h"
 #include "Theme.h"
 
@@ -130,20 +128,15 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // One window; commit, log and resolve are its pages, reached from each other.
+    OgWindow window(root);
     if (command == QStringLiteral("resolve")) {
-        ResolveWindow window(root, file);
+        window.go(OgWindow::Resolve, file);
         window.resize(1500, 900);
-        window.show();
-        return app.exec();
-    }
-    if (command == QStringLiteral("log")) {
-        LogWindow window(root);
+    } else {
+        window.go(command == QStringLiteral("log") ? OgWindow::Log : OgWindow::Commit);
         window.resize(1400, 860);
-        window.show();
-        return app.exec();
     }
-    CommitWindow window(root);
-    window.resize(1400, 860);
     window.show();
     return app.exec();
 }

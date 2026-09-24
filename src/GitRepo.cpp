@@ -2,7 +2,9 @@
 
 #include <algorithm>
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -18,24 +20,21 @@ QProcessEnvironment gitEnv()
 }
 } // namespace
 
-QString FileEntry::statusText() const
+bool FileEntry::conflicted() const
 {
-    if (inLastCommit && !worktreeChange())
-        return QStringLiteral("In last commit");
-    const QString base = worktreeStatusText();
-    return inLastCommit ? base + QStringLiteral(" + last commit") : base;
+    return index == u'U' || worktree == u'U' || (index == u'A' && worktree == u'A') || (index == u'D' && worktree == u'D');
 }
 
-QString FileEntry::worktreeStatusText() const
+QString FileEntry::statusText() const
 {
-    if (index == u'?') return QStringLiteral("Untracked");
-    if (index == u'U' || worktree == u'U' || (index == u'A' && worktree == u'A') || (index == u'D' && worktree == u'D'))
-        return QStringLiteral("Conflicted");
-    if (index == u'R') return QStringLiteral("Renamed");
-    if (index == u'C') return QStringLiteral("Copied");
-    if (index == u'A') return QStringLiteral("Added");
-    if (index == u'D' || worktree == u'D') return QStringLiteral("Deleted");
-    if (index == u'T' || worktree == u'T') return QStringLiteral("Type changed");
+    if (untracked()) return QStringLiteral("Untracked");
+    if (conflicted()) return QStringLiteral("Conflicted");
+    const QChar c = staged ? index : worktree;
+    if (c == u'R') return QStringLiteral("Renamed");
+    if (c == u'C') return QStringLiteral("Copied");
+    if (c == u'A') return QStringLiteral("Added");
+    if (c == u'D') return QStringLiteral("Deleted");
+    if (c == u'T') return QStringLiteral("Type changed");
     return QStringLiteral("Modified");
 }
 
@@ -183,29 +182,22 @@ QString GitRepo::headParent() const
     return p.isEmpty() ? emptyTree() : p;   // amending the root commit
 }
 
-// What the commit being amended actually changed, so the dialog can offer to
-// drop any of it.
-QVector<FileEntry> GitRepo::lastCommitFiles() const
-{
-    if (!hasHead())
-        return {};
-    QVector<FileEntry> out = changedFiles(headParent(), QStringLiteral("HEAD"));
-    for (FileEntry &e : out)
-        e.inLastCommit = true;
-    return out;
-}
 
 // Files that differ between two trees, with what happened to each in
 // commitStatus (M, A, D, R, C, T).
 QVector<FileEntry> GitRepo::changedFiles(const QString &from, const QString &to) const
 {
-    QVector<FileEntry> out;
     const auto r = run({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
                         QStringLiteral("--name-status"), QStringLiteral("-z"), QStringLiteral("-M"), from, to});
-    if (!r.ok())
-        return out;
+    return r.ok() ? parseNameStatus(r.out) : QVector<FileEntry>();
+}
 
-    const QList<QByteArray> parts = r.out.split('\0');
+// `diff --name-status -z` output: status, then the path -- or, for a rename
+// or copy, the old path and the new one.
+QVector<FileEntry> GitRepo::parseNameStatus(const QByteArray &data)
+{
+    QVector<FileEntry> out;
+    const QList<QByteArray> parts = data.split('\0');
     int i = 0;
     while (i + 1 < parts.size()) {
         const QByteArray st = parts.at(i);
@@ -229,6 +221,165 @@ QVector<FileEntry> GitRepo::changedFiles(const QString &from, const QString &to)
         i += paired ? 3 : 2;
     }
     return out;
+}
+
+QString GitRepo::commitBase(bool amend) const
+{
+    if (!hasHead())
+        return emptyTree();
+    return amend ? headParent() : QStringLiteral("HEAD");
+}
+
+QVector<FileEntry> GitRepo::stagedFiles(const QString &base) const
+{
+    const auto r = run({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                        QStringLiteral("--cached"), QStringLiteral("--name-status"), QStringLiteral("-z"),
+                        QStringLiteral("-M"), base});
+    QVector<FileEntry> out;
+    if (!r.ok())
+        return out;
+    for (FileEntry e : parseNameStatus(r.out)) {
+        if (e.commitStatus == u'U')
+            continue;   // a conflict: listed with the unstaged changes, to resolve
+        e.index = e.commitStatus;
+        e.commitStatus = u' ';
+        e.staged = true;
+        out << e;
+    }
+    return out;
+}
+
+QVector<FileEntry> GitRepo::unstagedFiles() const
+{
+    QVector<FileEntry> out;
+    for (FileEntry e : status()) {
+        if (e.untracked() || e.conflicted()) {
+            out << e;
+        } else if (e.worktree != u' ') {
+            e.index = u' ';
+            e.oldPath.clear();   // a rename is the staged side's business
+            out << e;
+        }
+    }
+    return out;
+}
+
+QStringList GitRepo::fullDiffArgs() const
+{
+    // Full-file context so the side-by-side view shows the whole file.
+    QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                     QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--histogram"),
+                     QStringLiteral("-U1000000")};
+    if (s_ignoreWhitespace)
+        args << QStringLiteral("-w");
+    return args;
+}
+
+QByteArray GitRepo::diffStaged(const FileEntry &f, const QString &base) const
+{
+    QStringList args = fullDiffArgs();
+    args << QStringLiteral("--cached") << QStringLiteral("-M") << base << QStringLiteral("--");
+    if (!f.oldPath.isEmpty())
+        args << f.oldPath;
+    return run(args << f.path).out;
+}
+
+QByteArray GitRepo::diffUnstaged(const FileEntry &f) const
+{
+    QStringList args = fullDiffArgs();
+    if (f.untracked())
+        // Exits 1 when the files differ; that's expected. git reads /dev/null
+        // as "no file" on every platform.
+        return run(args << QStringLiteral("--no-index") << QStringLiteral("--") << QStringLiteral("/dev/null")
+                        << f.path).out;
+    return run(args << QStringLiteral("--") << f.path).out;
+}
+
+QVector<FileEntry> GitRepo::workingChanges(const QString &base) const
+{
+    const auto r = run({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                        QStringLiteral("--name-status"), QStringLiteral("-z"), QStringLiteral("-M"), base});
+    QVector<FileEntry> out = r.ok() ? parseNameStatus(r.out) : QVector<FileEntry>();
+    for (const FileEntry &e : status())
+        if (e.untracked()) {
+            FileEntry u = e;
+            u.commitStatus = u'?';
+            out << u;
+        }
+    return out;
+}
+
+QByteArray GitRepo::diffWorking(const FileEntry &f, const QString &base) const
+{
+    if (f.commitStatus == u'?') {
+        FileEntry u = f;
+        u.index = u'?';
+        return diffUnstaged(u);
+    }
+    QStringList args = fullDiffArgs();
+    args << QStringLiteral("-M") << base << QStringLiteral("--");
+    if (!f.oldPath.isEmpty())
+        args << f.oldPath;
+    return run(args << f.path).out;
+}
+
+QByteArray GitRepo::indexBlob(const QString &path, bool *exists) const
+{
+    const GitResult r = run({QStringLiteral("cat-file"), QStringLiteral("blob"), QStringLiteral(":") + path});
+    if (exists)
+        *exists = r.ok();
+    return r.ok() ? r.out : QByteArray();
+}
+
+GitResult GitRepo::setIndexContent(const QString &path, const QByteArray &data) const
+{
+    // Keep the index's mode; a file new to the index takes the working tree's.
+    QString mode;
+    const QList<QByteArray> fields =
+        run({QStringLiteral("ls-files"), QStringLiteral("-s"), QStringLiteral("--"), path}).out.split(' ');
+    if (fields.size() > 1)
+        mode = QString::fromLatin1(fields.first());
+    if (mode.isEmpty())
+        mode = QFileInfo(QDir(m_root).filePath(path)).isExecutable() ? QStringLiteral("100755")
+                                                                     : QStringLiteral("100644");
+    GitResult r = run({QStringLiteral("hash-object"), QStringLiteral("-w"), QStringLiteral("--stdin")}, data);
+    if (!r.ok())
+        return r;
+    const QString sha = QString::fromLatin1(r.out).trimmed();
+    return run({QStringLiteral("update-index"), QStringLiteral("--add"), QStringLiteral("--cacheinfo"),
+                mode + u',' + sha + u',' + path});
+}
+
+GitResult GitRepo::prepareCommitIndex(const QString &indexFile, const QString &base, const QStringList &fromIndex,
+                                      const QStringList &fromWorktree) const
+{
+    GitResult r = run({QStringLiteral("read-tree"), base}, {}, 30000, indexFile);
+    if (!r.ok())
+        return r;
+    if (!fromIndex.isEmpty()) {
+        // The real index's entries for these paths, as-is; a path it doesn't
+        // have (a staged deletion, a rename's old name) goes.
+        QStringList ls{QStringLiteral("ls-files"), QStringLiteral("-s"), QStringLiteral("-z"), QStringLiteral("--")};
+        const GitResult entries = run(ls << fromIndex);
+        if (!entries.ok())
+            return entries;
+        // Only the scratch index is touched, so none of `rm --cached`'s checks
+        // for losing staged work apply.
+        QStringList rm{QStringLiteral("update-index"), QStringLiteral("--force-remove"), QStringLiteral("--")};
+        r = run(rm << fromIndex, {}, 30000, indexFile);
+        if (!r.ok())
+            return r;
+        QByteArray info = entries.out;
+        info.replace('\0', '\n');
+        r = run({QStringLiteral("update-index"), QStringLiteral("--index-info")}, info, 30000, indexFile);
+        if (!r.ok())
+            return r;
+    }
+    if (!fromWorktree.isEmpty()) {
+        QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
+        r = run(args << fromWorktree, {}, 30000, indexFile);
+    }
+    return r;
 }
 
 QByteArray GitRepo::diffBetween(const QString &from, const QString &to, const FileEntry &f) const
@@ -335,7 +486,7 @@ QString GitRepo::gitDir() const
 QString GitRepo::scratchIndexPath() const
 {
     const QString dir = gitDir();
-    return dir.isEmpty() ? QString() : dir + QStringLiteral("/og-amend-index");
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/og-commit-index");
 }
 
 // What left the conflicts behind, from the state files git keeps while it waits.
@@ -383,40 +534,6 @@ QVector<UnmergedFile> GitRepo::unmerged() const
 // has to be shaped -- but shaping the real one would disturb whatever the user
 // has staged, so this works in a scratch index that the commit is then pointed
 // at. Hooks and signing still run, because it is still a plain `git commit`.
-GitResult GitRepo::prepareAmendIndex(const QString &indexFile, const QStringList &include,
-                                     const QStringList &exclude) const
-{
-    GitResult r = run({QStringLiteral("read-tree"), QStringLiteral("HEAD")}, {}, 30000, indexFile);
-    if (!r.ok())
-        return r;
-    if (!exclude.isEmpty()) {
-        // Back to the parent's version, which removes files the commit added.
-        // The working tree is untouched, so the change reappears as pending.
-        QStringList args{QStringLiteral("reset"), QStringLiteral("-q"), headParent(), QStringLiteral("--")};
-        args << exclude;
-        r = run(args, {}, 30000, indexFile);
-        if (!r.ok())
-            return r;
-    }
-    if (!include.isEmpty()) {
-        QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
-        args << include;
-        r = run(args, {}, 30000, indexFile);
-    }
-    return r;
-}
-
-// The real index still describes the commit that was just replaced, which would
-// show up as phantom staged changes. Point the touched paths back at HEAD.
-void GitRepo::refreshIndexAfterAmend(const QStringList &paths) const
-{
-    if (paths.isEmpty())
-        return;
-    QStringList args{QStringLiteral("reset"), QStringLiteral("-q"), QStringLiteral("--")};
-    args << paths;
-    run(args);
-}
-
 // Two arbitrary files, with the same options as diff() so the rows line up
 // the same way. Exits 1 when they differ; that's expected.
 QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
@@ -428,45 +545,6 @@ QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
         args << QStringLiteral("-w");
     args << QStringLiteral("--") << a << b;
     return run(args).out;
-}
-
-QByteArray GitRepo::diff(const FileEntry &f, const QString &base) const
-{
-    // Full-file context so the side-by-side view shows the whole file.
-    QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
-                     QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--histogram"),
-                     QStringLiteral("-U1000000")};
-    if (s_ignoreWhitespace)
-        args << QStringLiteral("-w");
-    if (f.untracked()) {
-        args << QStringLiteral("--no-index") << QStringLiteral("--") << QStringLiteral("/dev/null") << f.path;
-        return run(args).out;   // exits 1 when files differ; that's expected
-    }
-    // Working tree vs `base` -- HEAD by default, or the parent when amending,
-    // since the amended commit replaces HEAD. Either way, exactly what the
-    // commit will record for this file.
-    const QString from = !base.isEmpty() ? base : hasHead() ? QStringLiteral("HEAD") : emptyTree();
-    args << QStringLiteral("-M") << from << QStringLiteral("--");
-    if (!f.oldPath.isEmpty())
-        args << f.oldPath;
-    args << f.path;
-    return run(args).out;
-}
-
-QStringList GitRepo::commitArgs(const QStringList &paths, bool amend, bool merging) const
-{
-    QStringList a{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
-    if (amend)
-        a << QStringLiteral("--amend");
-    if (merging)
-        return a;   // partial commits aren't allowed mid-merge; files were staged beforehand
-    // --only commits exactly the checked paths from the working tree, ignoring
-    // whatever else happens to be staged — the TortoiseGit model.
-    if (!paths.isEmpty())
-        a << QStringLiteral("--only") << QStringLiteral("--") << paths;
-    else if (amend)
-        a << QStringLiteral("--only");   // reword only
-    return a;
 }
 
 WhitespaceRules GitRepo::whitespaceRules(const QString &path) const

@@ -4,6 +4,7 @@
 #include "DiffView.h"
 #include "GitRepo.h"
 
+#include <QSet>
 #include <QTemporaryDir>
 #include <QWidget>
 
@@ -32,6 +33,8 @@ protected:
 
 private:
     void refresh();
+    QVector<QTreeWidgetItem *> fileItems() const;   // the file rows of both sections, in order
+    const FileEntry *entryOf(const QTreeWidgetItem *it) const;   // null for a section header
     void showCurrentDiff();
     bool canEditInDiff(const FileEntry &e) const;
     QByteArray rediffEdited(const QStringList &lines);
@@ -44,8 +47,16 @@ private:
     void writeMessage();
     QString messagePrompt() const;
     void showFileMenu(const QPoint &pos);
+    bool canUnstage(const FileEntry &e) const;
+    void stageFile(const FileEntry &e);
+    void unstageFile(const FileEntry &e);
+    bool indexMovedOn(const QByteArray &index);
+    void stageLines(const DiffView::Selection &picked);
+    void unstageLines(const DiffView::Selection &picked);
     bool canRevert(const FileEntry &e) const;
     void revertFile(const FileEntry &e);
+    void discardUnstaged(const FileEntry &e);
+    void afterIndexChange(const GitResult &r, const QString &failure, const QString &done);
     void onAmendToggled(bool on);
     bool prepareBranch();
     void updateCounts();
@@ -71,6 +82,7 @@ private:
     bool m_sized = false;
     QLabel *m_header;
     QLabel *m_repoPath;
+    QToolButton *m_logBtn;
     QToolButton *m_historyBtn;
     QToolButton *m_writeBtn;
     Agent m_agent;
@@ -94,6 +106,8 @@ private:
     // outside changes before saving) and the left side's copy -- HEAD's, or
     // the parent's when amending -- to re-diff edits against.
     QString m_diffPath;
+    bool m_diffStaged = false;      // it is the file's staged side that is shown
+    QByteArray m_shownIndex;        // the index's copy of it when it was shown
     QByteArray m_diffLoaded;
     QByteArray m_diffBase;
     bool m_diffCr = false;   // git's own diff saw CRLF on the file's side
@@ -102,6 +116,10 @@ private:
     WhitespaceRules m_wsRules;
     QByteArray m_wsBase;
     std::unique_ptr<QTemporaryDir> m_tmp;
+
+    // While amending, the staged list also holds the last commit's changes;
+    // these are the paths the index itself changes on top of HEAD.
+    QSet<QString> m_indexChanged;
 
     QString m_lastMessage;
     bool m_updatingChecks = false;

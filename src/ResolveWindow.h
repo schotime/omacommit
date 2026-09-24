@@ -25,11 +25,14 @@ class ResolveWindow : public QWidget {
     Q_OBJECT
 public:
     explicit ResolveWindow(const QString &root, const QString &selectPath = QString(), QWidget *parent = nullptr);
+    void select(const QString &path);   // open this conflicted file
 
 protected:
     void closeEvent(QCloseEvent *e) override;
+    void showEvent(QShowEvent *e) override;
 
 private:
+    bool m_shownBefore = false;
     // One unresolved conflict in the merged text, by line index of its markers.
     struct Conflict {
         int start = -1, base = -1, sep = -1, end = -1;

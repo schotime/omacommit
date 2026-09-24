@@ -3,6 +3,7 @@
 #include "ElidedLabel.h"
 #include "MessageEdit.h"
 #include "ResolveWindow.h"
+#include "OgWindow.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -34,6 +35,9 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <climits>
+
 namespace {
 constexpr int IndexRole = Qt::UserRole + 1;
 constexpr int MaxHistory = 25;
@@ -64,6 +68,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setVisible(!m_agent.id.isEmpty());
 
+    m_logBtn = new QToolButton;
+    m_logBtn->setText(tr("Log"));
+    m_logBtn->setToolTip(tr("Show the history in this window (Ctrl+L or Ctrl+Tab; again to come back)"));
+
     m_historyBtn = new QToolButton;
     m_historyBtn->setText(tr("Recent ▾"));
     m_historyBtn->setToolTip(tr("Reuse a recent commit message"));
@@ -80,7 +88,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_newBranch->setToolTip(tr("Create this branch from the current HEAD and commit to it"));
     m_newBranch->setClearButtonEnabled(true);
 
-    m_selectAll = new QCheckBox(tr("Changes"));
+    m_selectAll = new QCheckBox(tr("Files"));
     m_selectAll->setTristate(true);
     m_fileCount = new QLabel;
     m_fileCount->setObjectName(QStringLiteral("muted"));
@@ -91,7 +99,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_files = new QTreeWidget;
     m_files->setColumnCount(2);
     m_files->setHeaderLabels({tr("Path"), tr("Status")});
+    // Two sections, Staged and Changes, as header rows over flush file rows.
     m_files->setRootIsDecorated(false);
+    m_files->setItemsExpandable(false);
+    m_files->setIndentation(0);
     m_files->setUniformRowHeights(true);
     m_files->setSelectionMode(QAbstractItemView::SingleSelection);
     m_files->header()->setStretchLastSection(false);
@@ -119,10 +130,13 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     l->setContentsMargins(14, 12, 14, 12);
     l->setSpacing(8);
 
-    auto *head = new QVBoxLayout;
-    head->setSpacing(2);
-    head->addWidget(m_header);
-    head->addWidget(m_repoPath);
+    auto *titles = new QVBoxLayout;
+    titles->setSpacing(2);
+    titles->addWidget(m_header);
+    titles->addWidget(m_repoPath);
+    auto *head = new QHBoxLayout;
+    head->addLayout(titles, 1);
+    head->addWidget(m_logBtn, 0, Qt::AlignTop);   // the pane's top-right corner
     l->addLayout(head);
     l->addSpacing(4);
 
@@ -187,6 +201,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_pushBtn, &QPushButton::clicked, this, [this] { commit(true); });
     connect(m_historyMenu, &QMenu::aboutToShow, this, &CommitWindow::rebuildHistoryMenu);
     connect(m_writeBtn, &QToolButton::clicked, this, &CommitWindow::writeMessage);
+    connect(m_logBtn, &QToolButton::clicked, this, [this] { OgWindow::go(this, OgWindow::Log); });
     updateWriteButton();
     connect(&Theme::instance(), &Theme::changed, this, &CommitWindow::applyTheme);
 
@@ -195,14 +210,16 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Enter")), this, [this] { commit(false); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Return")), this, [this] { commit(true); });
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { refresh(); });
+    for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
+        new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Log); });
     new QShortcut(QKeySequence::Save, this, [this] { saveEdited(); });
-    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { close(); });
+    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { OgWindow::back(this); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+F")), this, [this] {
         m_filter->setFocus();
         m_filter->selectAll();
     });
     new QShortcut(QKeySequence(Qt::Key_Space), m_files, [this] {
-        if (auto *it = m_files->currentItem())
+        if (auto *it = m_files->currentItem(); it && entryOf(it))
             it->setCheckState(0, it->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);
     }, Qt::WidgetShortcut);
 
@@ -233,49 +250,71 @@ QString CommitWindow::draftKey() const
     return QStringLiteral("drafts/") + QString::fromLatin1(m_repo.root().toUtf8().toHex());
 }
 
+namespace {
+// A row is known by its section and path: a half-staged file has one in each.
+QString rowKey(const FileEntry &e)
+{
+    return (e.staged ? QStringLiteral("S:") : QStringLiteral("W:")) + e.path;
+}
+} // namespace
+
+QVector<QTreeWidgetItem *> CommitWindow::fileItems() const
+{
+    QVector<QTreeWidgetItem *> out;
+    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *section = m_files->topLevelItem(i);
+        for (int j = 0; j < section->childCount(); ++j)
+            out << section->child(j);
+    }
+    return out;
+}
+
+const FileEntry *CommitWindow::entryOf(const QTreeWidgetItem *it) const
+{
+    const int i = it ? it->data(0, IndexRole).toInt() : -1;
+    return it && it->parent() && i >= 0 && i < m_entries.size() ? &m_entries.at(i) : nullptr;
+}
+
 void CommitWindow::refresh()
 {
     QSet<QString> known, checked;
-    QString currentPath;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
-        const QString p = m_entries.at(it->data(0, IndexRole).toInt()).path;
-        known.insert(p);
+    QString currentKey, currentPath;
+    for (QTreeWidgetItem *it : fileItems()) {
+        const QString key = rowKey(*entryOf(it));
+        known.insert(key);
         if (it->checkState(0) == Qt::Checked)
-            checked.insert(p);
+            checked.insert(key);
     }
-    if (auto *cur = m_files->currentItem())
-        currentPath = m_entries.at(cur->data(0, IndexRole).toInt()).path;
-
-    m_entries = m_repo.status();
-
-    if (m_amend->isChecked()) {
-        // Amending replaces the last commit, so what it already contains belongs
-        // in the list too: unchecking one of those rows drops it from the commit.
-        QHash<QString, int> byPath;
-        for (int i = 0; i < m_entries.size(); ++i)
-            byPath.insert(m_entries.at(i).path, i);
-        // They come first, in the commit's order, then the changes not in it yet.
-        QVector<FileEntry> ordered;
-        QSet<int> taken;
-        const QVector<FileEntry> committed = m_repo.lastCommitFiles();
-        for (const FileEntry &e : committed) {
-            const auto it = byPath.constFind(e.path);
-            if (it != byPath.constEnd()) {
-                FileEntry merged = m_entries.at(it.value());
-                merged.inLastCommit = true;
-                merged.commitStatus = e.commitStatus;
-                ordered.push_back(merged);
-                taken.insert(it.value());
-            }
-            else
-                ordered.push_back(e);
-        }
-        for (int i = 0; i < m_entries.size(); ++i)
-            if (!taken.contains(i))
-                ordered.push_back(m_entries.at(i));
-        m_entries = ordered;
+    if (const FileEntry *cur = entryOf(m_files->currentItem())) {
+        currentKey = rowKey(*cur);
+        currentPath = cur->path;
     }
+
+    // Staged: the index against what the commit builds on -- HEAD, or when
+    // amending its parent, so the last commit's changes are listed there too.
+    // Changes: the working tree against the index.
+    const bool amend = m_amend->isChecked();
+    m_entries = m_repo.stagedFiles(diffBase());
+    m_indexChanged.clear();
+    if (amend) {
+        for (const FileEntry &e : m_repo.stagedFiles(QStringLiteral("HEAD")))
+            m_indexChanged.insert(e.path);
+        // The last commit's files first, in its order: they are what amending is about.
+        QHash<QString, int> order;
+        const QVector<FileEntry> last = m_repo.changedFiles(diffBase(), QStringLiteral("HEAD"));
+        for (int i = 0; i < last.size(); ++i)
+            order.insert(last.at(i).path, i);
+        std::stable_sort(m_entries.begin(), m_entries.end(), [&](const FileEntry &a, const FileEntry &b) {
+            return order.value(a.path, INT_MAX) < order.value(b.path, INT_MAX);
+        });
+    }
+    m_entries += m_repo.unstagedFiles();
+    // Files you have staged part of. (While amending, being in the last commit
+    // doesn't count: its newer changes are still meant to go in by default.)
+    QSet<QString> stagedPaths;
+    for (const FileEntry &e : m_entries)
+        if (e.staged && (!amend || m_indexChanged.contains(e.path)))
+            stagedPaths.insert(e.path);
 
     const QString branch = m_repo.branch();
     m_header->setText(branch.isEmpty() ? tr("Commit on <i>detached HEAD</i>")
@@ -288,7 +327,22 @@ void CommitWindow::refresh()
         QSignalBlocker block(m_files);
         m_files->clear();
     }
-    QTreeWidgetItem *toSelect = nullptr;
+    QTreeWidgetItem *sections[2] = {nullptr, nullptr};   // staged, changes
+    auto sectionFor = [&](bool staged) {
+        QTreeWidgetItem *&s = sections[staged ? 0 : 1];
+        if (!s) {
+            s = new QTreeWidgetItem;
+            s->setText(0, staged ? (amend ? tr("Staged, with the last commit") : tr("Staged")) : tr("Changes"));
+            s->setData(0, IndexRole, -1);
+            s->setFlags(Qt::ItemIsEnabled);   // a heading: not selectable, not ticked
+            QFont f = s->font(0);
+            f.setWeight(QFont::DemiBold);
+            s->setFont(0, f);
+            m_files->insertTopLevelItem(staged ? 0 : m_files->topLevelItemCount(), s);
+        }
+        return s;
+    };
+    QTreeWidgetItem *toSelect = nullptr, *samePath = nullptr;
     for (int i = 0; i < m_entries.size(); ++i) {
         const FileEntry &e = m_entries.at(i);
         auto *it = new QTreeWidgetItem;
@@ -297,13 +351,27 @@ void CommitWindow::refresh()
         it->setText(1, e.statusText());
         it->setData(0, IndexRole, i);
         it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-        // TortoiseGit default: tracked changes on, untracked files off.
-        const bool on = known.contains(e.path) ? checked.contains(e.path) : !e.untracked();
+        // Ticked unless untracked (TortoiseGit's default) -- or when part of the
+        // file is staged: then its staged part is what's meant, unless you tick
+        // the rest too.
+        // Staging part of a file changes what its change row should default to.
+        const QString key = rowKey(e);
+        const bool newlyStaged = !e.staged && stagedPaths.contains(e.path)
+                              && !known.contains(QStringLiteral("S:") + e.path) && !amend;
+        const bool on = known.contains(key) && !newlyStaged
+                            ? checked.contains(key)
+                            : e.staged || (!e.untracked() && !stagedPaths.contains(e.path));
         it->setCheckState(0, on ? Qt::Checked : Qt::Unchecked);
-        m_files->addTopLevelItem(it);
-        if (e.path == currentPath)
+        sectionFor(e.staged)->addChild(it);
+        if (key == currentKey)
             toSelect = it;
+        else if (e.path == currentPath && !samePath)
+            samePath = it;   // staged or unstaged away: follow the file to its other section
     }
+    for (QTreeWidgetItem *s : sections)
+        if (s)
+            s->setText(1, s->childCount() == 1 ? tr("1 file") : tr("%1 files").arg(s->childCount()));
+    m_files->expandAll();
     m_updatingChecks = false;
 
     applyTheme();
@@ -311,35 +379,39 @@ void CommitWindow::refresh()
     updateSelectAllState();
     updateCounts();
 
-    if (!toSelect && m_files->topLevelItemCount() > 0)
-        toSelect = m_files->topLevelItem(0);
+    if (!toSelect)
+        toSelect = samePath;
+    if (!toSelect && !fileItems().isEmpty())
+        toSelect = fileItems().constFirst();
     if (toSelect)
         m_files->setCurrentItem(toSelect);
     else
         m_diff->showMessage({}, tr("Working tree clean"));
 }
 
-// A file the commit would add: untracked, added to the index, or -- when
-// amending -- added by the commit being replaced. Its left side is empty.
-static bool isNewFile(const FileEntry &e)
+namespace {
+bool isUtf8(const QByteArray &data)
 {
-    return e.untracked() || e.index == u'A' || (e.inLastCommit && e.commitStatus == u'A');
+    QStringDecoder utf8(QStringDecoder::Utf8);
+    [[maybe_unused]] const QString decoded = utf8(data);   // decoding is what sets hasError()
+    return !utf8.hasError();
 }
+} // namespace
 
 void CommitWindow::showCurrentDiff()
 {
-    auto *it = m_files->currentItem();
-    const QString path = it ? m_entries.at(it->data(0, IndexRole).toInt()).path : QString();
+    QTreeWidgetItem *it = m_files->currentItem();
+    const FileEntry *entry = entryOf(it);
 
     if (m_diff->isDirty()) {
-        if (path == m_diffPath)
+        if (entry && entry->path == m_diffPath && entry->staged == m_diffStaged)
             return;   // a refresh re-selected the file being edited: keep the edits
         // Moving to another file. If the edited one is still listed, Cancel
         // can go back to it; if it has dropped out, only Save or Discard can.
         QTreeWidgetItem *editedItem = nullptr;
-        for (int i = 0; i < m_files->topLevelItemCount() && !editedItem; ++i)
-            if (m_entries.at(m_files->topLevelItem(i)->data(0, IndexRole).toInt()).path == m_diffPath)
-                editedItem = m_files->topLevelItem(i);
+        for (QTreeWidgetItem *f : fileItems())
+            if (entryOf(f)->path == m_diffPath && entryOf(f)->staged == m_diffStaged)
+                editedItem = f;
         if (!resolveUnsavedEdits(editedItem != nullptr)) {
             QSignalBlocker block(m_files);
             m_files->setCurrentItem(editedItem);
@@ -347,34 +419,68 @@ void CommitWindow::showCurrentDiff()
         }
     }
 
-    m_diffPath = path;
     m_diffLoaded.clear();
     m_diffBase.clear();
-    if (!it) {
+    m_wsBase.clear();
+    m_shownIndex.clear();
+    if (!entry) {
+        m_diffPath.clear();
+        m_diff->setPaneCaptions({}, {});
         m_diff->showMessage({}, tr("Select a file to see its changes"));
         return;
     }
-    const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
-    const QString base = diffBase();
+    const FileEntry e = *entry;
+    m_diffPath = e.path;
+    m_diffStaged = e.staged;
+    m_wsRules = m_repo.whitespaceRules(e.path);
+    const QString diskPath = QDir(m_repo.root()).filePath(e.path);
+    auto readDisk = [diskPath](bool *ok = nullptr) {
+        QFile f(diskPath);
+        const bool opened = f.open(QIODevice::ReadOnly);
+        if (ok)
+            *ok = opened;
+        return opened ? f.readAll() : QByteArray();
+    };
+    bool inIndex = false;
+    const QByteArray index = m_repo.indexBlob(e.path, &inIndex);
+    m_shownIndex = index;
+
+    if (e.staged) {
+        // What is staged, against what the commit builds on. Read-only: the
+        // index is changed a block or a file at a time, not by typing.
+        const QString before = diffBase() + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
+        const ImageFetch images = [this, before, index, inIndex] {
+            ImageSides s;
+            const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+            s.hasBefore = b.ok();
+            s.before = b.out;
+            s.hasAfter = inIndex;
+            s.after = index;
+            return s;
+        };
+        m_diff->setPaneCaptions(m_amend->isChecked() ? tr("Parent of the last commit") : tr("Last commit"),
+                                tr("Staged"));
+        m_diff->showDiff(it->text(0) + tr("  (staged)"), m_repo.diffStaged(e, diffBase()), false, images);
+        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+        if (b.ok())
+            m_wsBase = b.out;
+        flagWhitespace(index);
+        if (inIndex && isUtf8(index) && isUtf8(m_wsBase))
+            m_diff->setLineActions(tr("Unstage"), [this](const DiffView::Selection &s) { unstageLines(s); });
+        return;
+    }
+
+    // What is not staged yet: the working tree against the index (for an
+    // untracked file, against nothing).
     bool editable = canEditInDiff(e);
     if (editable) {
-        QFile f(QDir(m_repo.root()).filePath(e.path));
-        editable = f.open(QIODevice::ReadOnly);
-        if (editable)
-            m_diffLoaded = f.readAll();
+        bool ok = false;
+        m_diffLoaded = readDisk(&ok);
         // Lines are written back as UTF-8, which would mangle anything else.
-        QStringDecoder utf8(QStringDecoder::Utf8);
-        [[maybe_unused]] const QString decoded = utf8(m_diffLoaded);   // decoding is what sets hasError()
-        if (utf8.hasError() || m_diffLoaded.startsWith("\xEF\xBB\xBF"))
-            editable = false;
+        editable = ok && isUtf8(m_diffLoaded) && !m_diffLoaded.startsWith("\xEF\xBB\xBF");
     }
-    if (editable && !isNewFile(e)) {
-        const GitResult left = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
-                                           base + QLatin1Char(':') + e.path});
-        editable = left.ok();
-        m_diffBase = left.out;
-    }
-    const QByteArray diff = m_repo.diff(e, base);
+    m_diffBase = index;   // what the left side is, and what edits are re-diffed against
+    const QByteArray diff = m_repo.diffUnstaged(e);
     // Whether git's diff kept the CRs (it drops them when core.autocrlf
     // normalises the file). Re-diffs of edits must see the file the same way,
     // or one keystroke would turn every line of a CRLF file into a change.
@@ -384,44 +490,37 @@ void CommitWindow::showCurrentDiff()
             m_diffCr = true;
             break;
         }
-    // For an image: the base's version against the one on disk.
-    const QString before = base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath);
-    const QString onDiskPath = QDir(m_repo.root()).filePath(e.path);
-    const ImageFetch images = [this, before, onDiskPath] {
+    const ImageFetch images = [index, inIndex, readDisk] {
         ImageSides s;
-        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
-        s.hasBefore = b.ok();
-        s.before = b.out;
-        QFile f(onDiskPath);
-        s.hasAfter = f.open(QIODevice::ReadOnly);
-        if (s.hasAfter)
-            s.after = f.readAll();
+        s.hasBefore = inIndex;
+        s.before = index;
+        s.after = readDisk(&s.hasAfter);
         return s;
     };
-    m_diff->showDiff(it->text(0), diff, editable, images);
+    // The left side is the index's copy. For a file with staged changes that
+    // is not the last commit, which is worth saying: the staged part doesn't
+    // show here.
+    bool partlyStaged = false;
+    for (const FileEntry &s : m_entries)
+        if (s.staged && s.path == e.path && (!m_amend->isChecked() || m_indexChanged.contains(e.path)))
+            partlyStaged = true;
+    m_diff->setPaneCaptions(e.untracked() ? tr("Not in git yet") : partlyStaged ? tr("Staged") : tr("Last commit"),
+                            tr("Working tree"));
+    m_diff->showDiff(partlyStaged ? it->text(0) + tr("  (unstaged changes: against what's staged)") : it->text(0),
+                     diff, editable, images);
     // Git may show the file through filters (autocrlf, textconv, ...). If what
     // the pane shows is not what is on disk, saving it would rewrite the file
-    // as something else, so leave it read-only.
-    if (editable && m_diff->rightLines() != DiffView::linesOf(m_diffLoaded))
+    // as something else, so leave it read-only -- and don't stage from it.
+    const bool faithful = m_diff->rightLines() == DiffView::linesOf(m_diffLoaded);
+    if (editable && !faithful)
         m_diff->setEditable(false);
 
-    // Whitespace problems on the lines this commit would add -- measured
-    // against the same base as the diff (the parent when amending).
-    m_wsRules = m_repo.whitespaceRules(e.path);
-    m_wsBase.clear();
-    if (!e.untracked() && e.index != u'A' && m_repo.hasHead()) {
-        const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"),
-                                        base + QLatin1Char(':') + (e.oldPath.isEmpty() ? e.path : e.oldPath)});
-        if (b.ok())
-            m_wsBase = b.out;
-    }
-    QByteArray onDisk = m_diffLoaded;
-    if (onDisk.isEmpty()) {
-        QFile f(QDir(m_repo.root()).filePath(e.path));
-        if (f.open(QIODevice::ReadOnly))
-            onDisk = f.readAll();
-    }
+    // Whitespace problems on the lines staging this would add.
+    m_wsBase = index;
+    const QByteArray onDisk = m_diffLoaded.isEmpty() ? readDisk() : m_diffLoaded;
     flagWhitespace(onDisk);
+    if (editable && faithful && isUtf8(index))
+        m_diff->setLineActions(tr("Stage"), [this](const DiffView::Selection &s) { stageLines(s); });
 }
 
 void CommitWindow::flagWhitespace(const QByteArray &text)
@@ -429,30 +528,20 @@ void CommitWindow::flagWhitespace(const QByteArray &text)
     m_diff->setWhitespaceIssues(m_repo.whitespaceIssues(m_wsRules, m_wsBase, text));
 }
 
-// What the left side of the diff is. Amending replaces HEAD, so the commit
-// that results is measured against HEAD's parent; otherwise against HEAD.
 QString CommitWindow::diffBase() const
 {
-    if (m_amend->isChecked() && m_repo.hasHead())
-        return m_repo.headParent();
-    return QStringLiteral("HEAD");
+    return m_repo.commitBase(m_amend->isChecked());
 }
 
-// Plain modifications, and new files (edited against nothing). Deleted,
-// renamed and conflicted files have no single "file before" to edit against.
-// When amending, a file the commit changed counts too, as long as the commit
-// modified or added it rather than deleting or renaming it.
+// The working-tree side of modified and untracked files: those are a file on
+// disk against a single "before" (the index's copy, or nothing). Staged rows
+// show the index, deleted files have nothing to type into, and conflicts are
+// for og resolve.
 bool CommitWindow::canEditInDiff(const FileEntry &e) const
 {
-    auto plain = [](QChar c) { return c == u' ' || c == u'M'; };
-    if (isNewFile(e)) {
-        if (!e.untracked() && !plain(e.worktree))
-            return false;   // deleted since, or a both-added conflict
-        return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
-    }
-    if (!plain(e.index) || !plain(e.worktree))
+    if (e.staged || e.conflicted())
         return false;
-    if (e.inLastCommit ? e.commitStatus != u'M' : !e.worktreeChange())
+    if (!e.untracked() && e.worktree != u'M')
         return false;
     return QFileInfo(QDir(m_repo.root()).filePath(e.path)).isFile();
 }
@@ -520,37 +609,141 @@ void CommitWindow::saveEdited()
 
 void CommitWindow::showFileMenu(const QPoint &pos)
 {
-    auto *it = m_files->itemAt(pos);
-    if (!it)
+    const FileEntry *entry = entryOf(m_files->itemAt(pos));
+    if (!entry)
         return;
-    const FileEntry e = m_entries.at(it->data(0, IndexRole).toInt());
+    const FileEntry e = *entry;
 
     QMenu menu(this);
-    QAction *resolve = nullptr;
-    if (e.statusText() == QLatin1String("Conflicted")) {
+    QAction *resolve = nullptr, *stage = nullptr, *unstage = nullptr, *discard = nullptr, *revert = nullptr;
+    if (e.conflicted()) {
         resolve = menu.addAction(tr("Resolve…"));
         resolve->setEnabled(!m_busy);
     }
-    QAction *revert = menu.addAction(tr("Revert…"));
-    revert->setEnabled(!m_busy && canRevert(e));
+    if (e.staged) {
+        unstage = menu.addAction(tr("Unstage"));
+        unstage->setEnabled(!m_busy && canUnstage(e));
+        if (!canUnstage(e))
+            unstage->setText(tr("Unstage (it is only in the last commit)"));
+        revert = menu.addAction(tr("Revert to the last commit…"));
+        revert->setEnabled(!m_busy && canRevert(e));
+    } else {
+        stage = menu.addAction(tr("Stage"));
+        stage->setEnabled(!m_busy && !e.conflicted());
+        discard = menu.addAction(tr("Discard unstaged changes…"));
+        discard->setEnabled(!m_busy && !e.untracked() && !e.conflicted());
+    }
     QAction *chosen = menu.exec(m_files->viewport()->mapToGlobal(pos));
-    if (chosen == revert) {
+    if (!chosen)
+        return;
+    if (chosen == stage) {
+        stageFile(e);
+    } else if (chosen == unstage) {
+        unstageFile(e);
+    } else if (chosen == discard) {
+        discardUnstaged(e);
+    } else if (chosen == revert) {
         revertFile(e);
-    } else if (chosen && chosen == resolve) {
-        // Its own window; the list is refreshed when it closes.
-        auto *w = new ResolveWindow(m_repo.root(), e.path);
-        w->setAttribute(Qt::WA_DeleteOnClose);
-        connect(w, &QObject::destroyed, this, [this] { refresh(); });
-        w->resize(1500, 900);
-        w->show();
+    } else if (chosen == resolve) {
+        // In this window's place; the list is refreshed on coming back.
+        OgWindow::go(this, OgWindow::Resolve, e.path);
     }
 }
 
-// Untracked files have no committed version to go back to, and a row that is
-// only in the commit being amended has nothing pending.
+// Staging and unstaging change what the list and the diff show. Unsaved edits
+// to the file were measured against the old index, so they are settled first.
+void CommitWindow::afterIndexChange(const GitResult &r, const QString &failure, const QString &done)
+{
+    if (!r.ok()) {
+        showError(failure, QString::fromUtf8(r.err));
+    } else {
+        m_status->setText(done);
+    }
+    refresh();
+}
+
+void CommitWindow::stageFile(const FileEntry &e)
+{
+    if (m_busy || (m_diffPath == e.path && !resolveUnsavedEdits()))
+        return;
+    afterIndexChange(m_repo.run({QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--"), e.path}),
+                     tr("Could not stage %1").arg(e.path), tr("Staged %1").arg(e.path));
+}
+
+// While amending, a staged row can be one the last commit made and the index
+// doesn't change further; there is nothing to unstage (untick it to drop it).
+bool CommitWindow::canUnstage(const FileEntry &e) const
+{
+    return e.staged && (!m_amend->isChecked() || m_indexChanged.contains(e.path));
+}
+
+void CommitWindow::unstageFile(const FileEntry &e)
+{
+    if (m_busy || !canUnstage(e))
+        return;
+    QStringList paths{e.path};
+    if (!e.oldPath.isEmpty())
+        paths << e.oldPath;   // a rename: its old name comes back too
+    QStringList args = m_repo.hasHead()
+        ? QStringList{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")}
+        : QStringList{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--")};
+    afterIndexChange(m_repo.run(args << paths), tr("Could not unstage %1").arg(e.path),
+                     tr("Unstaged %1").arg(e.path));
+}
+
+// The picked lines are rows of the diff on screen, which was made from the
+// index as it was then. If something else has changed it since, they no
+// longer line up: show it afresh rather than write a garbled file.
+bool CommitWindow::indexMovedOn(const QByteArray &index)
+{
+    if (index == m_shownIndex)
+        return false;
+    m_status->setText(tr("%1 changed in the index meanwhile — showing it again; try once more").arg(m_diffPath));
+    refresh();
+    return true;
+}
+
+// Stage a block or lines: the index's copy takes them from the working tree.
+void CommitWindow::stageLines(const DiffView::Selection &picked)
+{
+    if (m_busy || m_diffStaged || m_diff->isDirty())
+        return;
+    bool inIndex = false;
+    const QByteArray index = m_repo.indexBlob(m_diffPath, &inIndex);
+    if (indexMovedOn(index))
+        return;
+    const QStringList lines = m_diff->linesApplied(picked, true, DiffView::linesOf(index));
+    // Line endings follow the index's copy; a file new to it, the one on disk.
+    const QByteArray data = DiffView::compose(lines, inIndex ? index : m_diffLoaded);
+    afterIndexChange(m_repo.setIndexContent(m_diffPath, data), tr("Could not stage the change"),
+                     tr("Staged part of %1").arg(m_diffPath));
+}
+
+// Unstage a block or lines: the index's copy goes back to the base's version of them.
+void CommitWindow::unstageLines(const DiffView::Selection &picked)
+{
+    if (m_busy || !m_diffStaged)
+        return;
+    const FileEntry *e = entryOf(m_files->currentItem());
+    const QByteArray index = m_repo.indexBlob(m_diffPath);
+    if (indexMovedOn(index))
+        return;
+    const QStringList lines = m_diff->linesApplied(picked, false, DiffView::linesOf(index));
+    GitResult r;
+    if (lines.isEmpty() && e && e->index == u'A')
+        // All of a new file unstaged: it is no longer added, rather than added empty.
+        r = m_repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"),
+                        m_diffPath});
+    else
+        r = m_repo.setIndexContent(m_diffPath, DiffView::compose(lines, index));
+    afterIndexChange(r, tr("Could not unstage the change"), tr("Unstaged part of %1").arg(m_diffPath));
+}
+
+// Back to the last commit, from a staged row. While amending, a row only in
+// the commit being amended has nothing pending to revert.
 bool CommitWindow::canRevert(const FileEntry &e) const
 {
-    return e.worktreeChange() && !e.untracked();
+    return e.staged && canUnstage(e);
 }
 
 // TortoiseGit's revert: back to HEAD, staged and unstaged changes alike. A file
@@ -562,6 +755,7 @@ void CommitWindow::revertFile(const FileEntry &e)
         return;
 
     const bool editing = m_diffPath == e.path && m_diff->isDirty();
+    // A file new to the index -- added, or the new name of a rename or copy.
     const bool newInIndex = e.index == u'A' || e.index == u'R' || e.index == u'C' || !m_repo.hasHead();
     QMessageBox box(this);
     box.setIcon(QMessageBox::Warning);
@@ -603,6 +797,33 @@ void CommitWindow::revertFile(const FileEntry &e)
         m_diff->discard();   // the file they applied to is gone
     m_status->setText(tr("Reverted %1").arg(e.path));
     refresh();
+}
+
+// Discard unstaged changes: the working tree back to the index's copy, so what
+// is staged stays staged.
+void CommitWindow::discardUnstaged(const FileEntry &e)
+{
+    if (m_busy || e.staged || e.untracked() || e.conflicted())
+        return;
+    const bool editing = m_diffPath == e.path && !m_diffStaged && m_diff->isDirty();
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Discard changes to %1").arg(e.path));
+    box.setText(tr("Discard the unstaged changes to %1?").arg(e.path));
+    QString what = tr("The file goes back to what is staged (or to the last commit, if nothing is). "
+                      "Its other changes will be lost.");
+    if (editing)
+        what += QLatin1Char(' ') + tr("Your unsaved edits in the diff will be lost.");
+    box.setInformativeText(what);
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(tr("Discard"));
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Ok)
+        return;
+    const GitResult r = m_repo.run({QStringLiteral("restore"), QStringLiteral("--"), e.path});
+    if (r.ok() && editing)
+        m_diff->discard();
+    afterIndexChange(r, tr("Could not discard changes to %1").arg(e.path), tr("Discarded changes to %1").arg(e.path));
 }
 
 // Asks what to do with unsaved diff edits. Returns false when the caller
@@ -656,10 +877,10 @@ void CommitWindow::applyTheme()
     m_diff->applyTheme();
     m_message->applyTheme();
     m_updatingChecks = true;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
-        it->setForeground(1, statusColor(m_entries.at(it->data(0, IndexRole).toInt())));
-    }
+    for (QTreeWidgetItem *it : fileItems())
+        it->setForeground(1, statusColor(*entryOf(it)));
+    for (int i = 0; i < m_files->topLevelItemCount(); ++i)
+        m_files->topLevelItem(i)->setForeground(1, Theme::instance().colors().muted);
     m_updatingChecks = false;
     updateCounts();
 }
@@ -668,8 +889,14 @@ void CommitWindow::applyFilter()
 {
     const QString f = m_filter->text().trimmed();
     for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
-        it->setHidden(!f.isEmpty() && !it->text(0).contains(f, Qt::CaseInsensitive));
+        QTreeWidgetItem *section = m_files->topLevelItem(i);
+        bool any = false;
+        for (int j = 0; j < section->childCount(); ++j) {
+            QTreeWidgetItem *it = section->child(j);
+            it->setHidden(!f.isEmpty() && !it->text(0).contains(f, Qt::CaseInsensitive));
+            any = any || !it->isHidden();
+        }
+        section->setHidden(!any);   // a heading over nothing is noise
     }
     updateSelectAllState();   // a filter matching nothing leaves it nothing to toggle
 }
@@ -677,17 +904,13 @@ void CommitWindow::applyFilter()
 void CommitWindow::toggleAll()
 {
     bool anyUnchecked = false;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
+    for (QTreeWidgetItem *it : fileItems())
         if (!it->isHidden() && it->checkState(0) != Qt::Checked)
             anyUnchecked = true;
-    }
     m_updatingChecks = true;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
+    for (QTreeWidgetItem *it : fileItems())
         if (!it->isHidden())
             it->setCheckState(0, anyUnchecked ? Qt::Checked : Qt::Unchecked);
-    }
     m_updatingChecks = false;
     updateSelectAllState();
     updateCounts();
@@ -695,26 +918,26 @@ void CommitWindow::toggleAll()
 
 void CommitWindow::updateSelectAllState()
 {
+    const QVector<QTreeWidgetItem *> rows = fileItems();
     int checked = 0;
-    const int total = m_files->topLevelItemCount();
-    for (int i = 0; i < total; ++i)
-        if (m_files->topLevelItem(i)->checkState(0) == Qt::Checked)
+    bool anyShown = false;
+    for (QTreeWidgetItem *it : rows) {
+        if (it->checkState(0) == Qt::Checked)
             ++checked;
+        anyShown = anyShown || !it->isHidden();
+    }
     QSignalBlocker block(m_selectAll);
     m_selectAll->setCheckState(checked == 0 ? Qt::Unchecked
-                               : checked == total ? Qt::Checked
-                                                  : Qt::PartiallyChecked);
+                               : checked == rows.size() ? Qt::Checked
+                                                        : Qt::PartiallyChecked);
     // It toggles the rows on show, so with none showing -- nothing changed,
     // or a filter matching nothing -- there is nothing for it to do.
-    bool anyShown = false;
-    for (int i = 0; i < total && !anyShown; ++i)
-        anyShown = !m_files->topLevelItem(i)->isHidden();
     m_selectAll->setEnabled(!m_busy && anyShown);
 }
 
 // Returns false when the commit must not go ahead. The branch is created as a
 // separate step rather than folded into the commit, so everything downstream --
-// --only, the merge path, push -u -- works the same on a new branch as on an
+// the scratch index, the merge path, push -u -- works the same on a new branch as on an
 // existing one.
 bool CommitWindow::prepareBranch()
 {
@@ -753,12 +976,12 @@ void CommitWindow::updateCounts()
     m_counter->setStyleSheet(QStringLiteral("color:%1").arg(
         (subject > 72 ? c.red : subject > 50 ? c.yellow : c.muted).name()));
 
+    const QVector<QTreeWidgetItem *> rows = fileItems();
     int checked = 0;
-    const int total = m_files->topLevelItemCount();
-    for (int i = 0; i < total; ++i)
-        if (m_files->topLevelItem(i)->checkState(0) == Qt::Checked)
+    for (QTreeWidgetItem *it : rows)
+        if (it->checkState(0) == Qt::Checked)
             ++checked;
-    m_fileCount->setText(tr("%1 of %2 selected").arg(checked).arg(total));
+    m_fileCount->setText(tr("%1 of %2 selected").arg(checked).arg(rows.size()));
 
     const bool can = !m_busy && !m_writer && !msg.trimmed().isEmpty() && (checked > 0 || m_amend->isChecked());
     m_commitBtn->setEnabled(can);
@@ -805,76 +1028,68 @@ void CommitWindow::commit(bool push)
 
     const QString msg = m_message->toPlainText().trimmed();
     const bool amend = m_amend->isChecked();
-    QStringList paths, untracked, dropped;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
-        const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
-        if (it->checkState(0) != Qt::Checked) {
-            // Unchecking something the commit already has means taking it out.
-            if (e.inLastCommit) {
-                dropped << e.path;
-                if (!e.oldPath.isEmpty())
-                    dropped << e.oldPath;
-            }
+    // A ticked staged row commits what is staged; a ticked change row commits
+    // the file as it is on disk. Anything unticked stays as the base has it
+    // (HEAD, or its parent when amending -- which drops it from the commit).
+    QStringList fromIndex, fromWorktree;
+    for (QTreeWidgetItem *it : fileItems()) {
+        if (it->checkState(0) != Qt::Checked)
             continue;
+        const FileEntry &e = *entryOf(it);
+        if (e.staged) {
+            fromIndex << e.path;
+            if (!e.oldPath.isEmpty())
+                fromIndex << e.oldPath;
+        } else {
+            fromWorktree << e.path;
         }
-        if (!e.worktreeChange() && e.inLastCommit)
-            continue;              // already in the tree being amended; nothing to take
-        paths << e.path;
-        if (!e.oldPath.isEmpty())
-            paths << e.oldPath;
-        if (e.untracked())
-            untracked << e.path;
     }
-    if (msg.isEmpty() || (paths.isEmpty() && dropped.isEmpty() && !amend))
+    if (msg.isEmpty() || (fromIndex.isEmpty() && fromWorktree.isEmpty() && !amend))
         return;
 
     if (!prepareBranch())
         return;
 
     const bool merging = m_repo.isMerging();
-    // Dropping files from the commit cannot be expressed with `commit --only`,
-    // which only ever adds working-tree content on top of the tree it amends.
-    const bool scratch = amend && !merging && !dropped.isEmpty();
     setBusy(true, tr("Committing…"));
 
+    // Normally the commit is built in a scratch index, so what is staged but
+    // unticked stays staged afterwards. Mid-merge git wants the whole index
+    // committed: the ticked changes are staged into it and it all goes.
     QString indexFile;
-    if (scratch) {
-        indexFile = m_repo.scratchIndexPath();
-        if (indexFile.isEmpty()) {
-            setBusy(false, tr("Nothing committed"));
-            showError(tr("Could not amend"), tr("Could not locate the repository's git directory."));
-            return;
-        }
-        QFile::remove(indexFile);
-        const GitResult r = m_repo.prepareAmendIndex(indexFile, paths, dropped);
-        if (!r.ok()) {
-            QFile::remove(indexFile);
-            setBusy(false, tr("Nothing committed"));
-            showError(tr("Could not amend"), QString::fromUtf8(r.err));
-            return;
-        }
-    } else {
-        // New files have to be known to git before `commit --only` can take them;
-        // during a merge everything checked is staged and committed together.
-        const QStringList toAdd = merging ? paths : untracked;
-        if (!toAdd.isEmpty()) {
+    if (merging) {
+        if (!fromWorktree.isEmpty()) {
             QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
-            args << toAdd;
-            const GitResult r = m_repo.run(args);
+            const GitResult r = m_repo.run(args << fromWorktree);
             if (!r.ok()) {
                 setBusy(false, tr("Nothing committed"));
                 showError(tr("Could not stage files"), QString::fromUtf8(r.err));
                 return;
             }
         }
+    } else {
+        indexFile = m_repo.scratchIndexPath();
+        if (indexFile.isEmpty()) {
+            setBusy(false, tr("Nothing committed"));
+            showError(tr("Could not commit"), tr("Could not locate the repository's git directory."));
+            return;
+        }
+        QFile::remove(indexFile);
+        const GitResult r = m_repo.prepareCommitIndex(indexFile, diffBase(), fromIndex, fromWorktree);
+        if (!r.ok()) {
+            QFile::remove(indexFile);
+            setBusy(false, tr("Nothing committed"));
+            showError(tr("Could not commit"), QString::fromUtf8(r.err));
+            return;
+        }
     }
 
     saveToHistory(msg);
 
     // Async so long-running hooks (linters, tests) don't freeze the window.
-    QStringList touched = paths;
-    touched << dropped;
+    // Afterwards the real index takes what was committed from the working
+    // tree; what was committed from the index is already there.
+    const QStringList touched = merging ? QStringList() : fromWorktree;
     auto *proc = new QProcess(this);
     m_repo.configure(*proc, indexFile);
     connect(proc, &QProcess::finished, this, [this, proc, push, indexFile, touched](int code, QProcess::ExitStatus st) {
@@ -888,8 +1103,10 @@ void CommitWindow::commit(bool push)
             refresh();   // a new branch may have been created before the failure
             return;
         }
-        if (!indexFile.isEmpty())
-            m_repo.refreshIndexAfterAmend(touched);
+        if (!touched.isEmpty()) {
+            QStringList args{QStringLiteral("reset"), QStringLiteral("-q"), QStringLiteral("--")};
+            m_repo.run(args << touched);
+        }
         const QString hash = QString::fromUtf8(
             m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("HEAD")}).out).trimmed();
         QSettings().remove(draftKey());
@@ -916,12 +1133,10 @@ void CommitWindow::commit(bool push)
         setBusy(false, tr("Commit failed"));
         showError(tr("Commit failed"), tr("Could not start git."));
     });
-    // With the scratch index the tree is already exactly right, so the commit
-    // takes the index as-is rather than naming paths.
-    proc->start(QStringLiteral("git"),
-                scratch ? QStringList{QStringLiteral("commit"), QStringLiteral("--amend"),
-                                      QStringLiteral("-F"), QStringLiteral("-")}
-                        : m_repo.commitArgs(paths, amend, merging));
+    QStringList args{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
+    if (amend)
+        args << QStringLiteral("--amend");
+    proc->start(QStringLiteral("git"), args);
     proc->write(msg.toUtf8());
     proc->closeWriteChannel();
 }
@@ -961,7 +1176,7 @@ void CommitWindow::finishAfterSuccess()
 {
     refresh();
     if (m_entries.isEmpty())
-        QTimer::singleShot(700, this, &QWidget::close);   // nothing left: get out of the way
+        QTimer::singleShot(700, this, [this] { OgWindow::back(this); });   // nothing left: get out of the way
 }
 
 void CommitWindow::setBusy(bool busy, const QString &message)
@@ -1036,23 +1251,39 @@ void CommitWindow::updateWriteButton()
 // style, and the draft if there is one. Empty when nothing is checked.
 QString CommitWindow::messagePrompt() const
 {
-    QStringList tracked, untracked;
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
+    // What each ticked row commits: a change row the file on disk, a staged
+    // row what is staged -- unless the file's change row is ticked too.
+    QStringList worktree, staged, untracked;
+    for (QTreeWidgetItem *it : fileItems()) {
         if (it->checkState(0) != Qt::Checked)
             continue;
-        const FileEntry &e = m_entries.at(it->data(0, IndexRole).toInt());
-        (e.untracked() ? untracked : tracked) << e.path;
-        if (!e.oldPath.isEmpty())
-            tracked << e.oldPath;
+        const FileEntry &e = *entryOf(it);
+        if (e.untracked())
+            untracked << e.path;
+        else if (!e.staged)
+            worktree << e.path;
     }
-    QString diff;
-    if (!tracked.isEmpty()) {
+    for (QTreeWidgetItem *it : fileItems()) {
+        const FileEntry &e = *entryOf(it);
+        if (e.staged && it->checkState(0) == Qt::Checked && !worktree.contains(e.path)) {
+            staged << e.path;
+            if (!e.oldPath.isEmpty())
+                staged << e.oldPath;
+        }
+    }
+    auto baseDiff = [this](bool cached, const QStringList &paths) {
         QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
-                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("-M"),
-                         m_repo.hasHead() ? diffBase() : m_repo.emptyTree(), QStringLiteral("--")};
-        diff += QString::fromUtf8(m_repo.run(args << tracked).out);
-    }
+                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("-M")};
+        if (cached)
+            args << QStringLiteral("--cached");
+        args << diffBase() << QStringLiteral("--") << paths;
+        return QString::fromUtf8(m_repo.run(args).out);
+    };
+    QString diff;
+    if (!staged.isEmpty())
+        diff += baseDiff(true, staged);
+    if (!worktree.isEmpty())
+        diff += baseDiff(false, worktree);
     for (const QString &p : untracked)
         diff += QString::fromUtf8(m_repo.run({QStringLiteral("diff"), QStringLiteral("--no-color"),
                                               QStringLiteral("--no-index"), QStringLiteral("--"),
@@ -1208,8 +1439,10 @@ void CommitWindow::saveToHistory(const QString &message)
 void CommitWindow::showEvent(QShowEvent *e)
 {
     QWidget::showEvent(e);
-    if (m_sized)
+    if (m_sized) {
+        refresh();   // back from the log or resolve, which may have changed things
         return;
+    }
     m_sized = true;
     m_message->ensurePolished();
     const int total = m_split->width();

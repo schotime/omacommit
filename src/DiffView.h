@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QHash>
+#include <QSet>
 #include <QPlainTextEdit>
 #include <QStringList>
 #include <QVector>
@@ -48,6 +49,8 @@ public:
     void setDualNumbers(bool dual);   // two line-number columns, for the inline view
     void setShowWhitespace(bool show); // spaces as ·, tabs as →, in the muted colour
     bool showsWhitespace() const { return m_showWs; }
+    int lineCount() const { return int(m_lines.size()); }
+    const Line &lineAt(int i) const { return m_lines.at(i); }
 
     int gutterWidth() const;
     void paintGutter(QPaintEvent *e);
@@ -122,6 +125,24 @@ public:
     void redo();
 
     int rowCount() const { return int(m_l.size()); }
+
+    // Changed lines picked in the diff, by aligned row: `left` rows whose old
+    // line is picked, `right` rows whose new line is.
+    struct Selection {
+        QSet<int> left, right;
+        bool isEmpty() const { return left.isEmpty() && right.isEmpty(); }
+    };
+    // Actions on picked lines, offered first in the context menu while set:
+    // the block under the pointer, and the line under it or the selected lines
+    // ("Stage block" / "Stage line"). Cleared whenever something other than a
+    // diff is shown.
+    void setLineActions(const QString &verb, std::function<void(const Selection &)> action);
+    // One side with the picked lines taken over from the other, as git stages
+    // lines: moving onto the left (staging), a picked new line is added and a
+    // picked old line dropped; onto the right (unstaging), the reverse. Lines
+    // not picked come from `exactTarget` (that side's file) by line number, so
+    // ignoring whitespace can't leak into the result.
+    QStringList linesApplied(const Selection &picked, bool toLeft, const QStringList &exactTarget) const;
     QStringList resultOf(Take how, int row) const;
     QStringList rightLines() const;   // the right side as shown (the buffer, once flushed)
 
@@ -190,6 +211,11 @@ private:
     QLabel *m_rightCaption;
     QColor m_leftTint, m_rightTint;
     QTimer *m_rediffTimer;
+    Selection blockAt(int row) const;
+    Selection pickedLines(DiffPane *pane, int paneLine) const;   // paneLine: the pane's own line under the pointer
+
+    QString m_lineVerb;
+    std::function<void(const Selection &)> m_lineAction;
 
     QString m_name;
     QVector<DiffPane::Line> m_l, m_r;

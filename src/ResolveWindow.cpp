@@ -4,6 +4,7 @@
 #include "DiffView.h"
 #include "ElidedLabel.h"
 #include "FlowLayout.h"
+#include "OgWindow.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -326,7 +327,9 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     new QShortcut(QKeySequence(QStringLiteral("Alt+Down")), this, [step] { step(1); });
     new QShortcut(QKeySequence(QStringLiteral("Alt+Up")), this, [step] { step(-1); });
     new QShortcut(QKeySequence::Save, this, [this] { save(); });
-    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { close(); });
+    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { OgWindow::back(this); });
+    for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
+        new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Log); });
 
     applyTheme();
     QString select = selectPath;
@@ -945,18 +948,7 @@ void ResolveWindow::commit()
 {
     if (!resolveUnsaved())
         return;
-    for (QWidget *w : QApplication::topLevelWidgets())
-        if (auto *cw = qobject_cast<CommitWindow *>(w); cw && cw->isVisible()) {
-            cw->raise();
-            cw->activateWindow();
-            close();
-            return;
-        }
-    auto *cw = new CommitWindow(m_repo.root());
-    cw->setAttribute(Qt::WA_DeleteOnClose);
-    cw->resize(size());
-    cw->show();
-    close();
+    OgWindow::go(this, OgWindow::Commit);
 }
 
 // git rebase --continue: records this stop's resolution and replays the next
@@ -1045,6 +1037,22 @@ void ResolveWindow::applyTheme()
     c.base = Theme::mix(t.background, t.muted, 0.12);
     c.marker = Theme::mix(t.background, t.red, 0.35);
     m_merged->setColors(c);
+}
+
+void ResolveWindow::select(const QString &path)
+{
+    if (path != m_path && !resolveUnsaved())
+        return;
+    refreshList(QFileInfo(path).isAbsolute() ? QDir(m_repo.root()).relativeFilePath(path) : path);
+}
+
+// Back from another page of the window: the conflicts may have moved on.
+void ResolveWindow::showEvent(QShowEvent *e)
+{
+    QWidget::showEvent(e);
+    if (m_shownBefore)
+        refreshList(m_path);
+    m_shownBefore = true;
 }
 
 void ResolveWindow::closeEvent(QCloseEvent *e)

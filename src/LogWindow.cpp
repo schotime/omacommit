@@ -3,6 +3,7 @@
 #include "DiffView.h"
 #include "ElidedLabel.h"
 #include "ResolveWindow.h"
+#include "OgWindow.h"
 #include "Theme.h"
 
 #include <QCheckBox>
@@ -19,7 +20,12 @@
 #include <QPainterPath>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QCloseEvent>
+#include <QDir>
+#include <QFile>
 #include <QShortcut>
+#include <QShowEvent>
+#include <QToolButton>
 #include <QSplitter>
 #include <QStyledItemDelegate>
 #include <QTreeWidget>
@@ -37,9 +43,14 @@ QLabel *sectionLabel(const QString &text)
     return l;
 }
 
+// The "Working changes" row's stand-in for a hash: never a real one.
+const QString WorkingHash = QStringLiteral("og:working-changes");
+
 QString statusText(QChar s)
 {
     switch (s.toLatin1()) {
+    case '?': return QStringLiteral("Untracked");
+    case 'U': return QStringLiteral("Conflicted");
     case 'A': return QStringLiteral("Added");
     case 'D': return QStringLiteral("Deleted");
     case 'R': return QStringLiteral("Renamed");
@@ -93,6 +104,23 @@ public:
             stroke(x(s.from), top, x(s.to), mid, laneColor(s.from, t));
         for (const auto &s : g.bottom)
             stroke(x(s.from), mid, x(s.to), bottom, laneColor(s.to, t));
+
+        // Uncommitted work: a dashed, hollow dot and the label in muted italics,
+        // so it doesn't pass for a commit.
+        if (c.hash == WorkingHash) {
+            const qreal rad = lane * 0.3;
+            p->setPen(QPen(t.muted, 1.6, Qt::DashLine));
+            p->setBrush(t.background);
+            p->drawEllipse(QPointF(x(g.column), mid), rad, rad);
+            QFont f = o.font;
+            f.setItalic(true);
+            p->setFont(f);
+            p->setPen(o.state & QStyle::State_Selected ? o.palette.color(QPalette::HighlightedText) : t.muted);
+            const qreal tx = r.left() + 6 + lane * g.width + 8;
+            p->drawText(QRectF(tx, r.top(), r.right() - tx - 4, r.height()), Qt::AlignVCenter | Qt::AlignLeft, c.subject);
+            p->restore();
+            return;
+        }
 
         // The dot: hollow for merges, ringed for the commit HEAD is on.
         const QVector<RefLabel> refs = m_w->refs().value(c.hash);
@@ -174,6 +202,9 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
     m_allBranches = new QCheckBox(tr("All branches"));
+    m_commitBtn = new QToolButton;
+    m_commitBtn->setText(tr("Commit"));
+    m_commitBtn->setToolTip(tr("Show og commit in this window (Ctrl+L or Ctrl+Tab)"));
     m_allBranches->setChecked(true);
     m_allBranches->setToolTip(tr("Show every local and remote branch and tag, not only the current branch"));
 
@@ -229,7 +260,14 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     titles->addWidget(m_header);
     titles->addWidget(m_repoPath);
     head->addLayout(titles, 1);
-    head->addWidget(m_allBranches, 0, Qt::AlignBottom);
+    // The page switch in the pane's top-right corner, as on the commit page;
+    // the branch toggle under it, level with the path.
+    auto *side = new QVBoxLayout;
+    side->setSpacing(2);
+    side->addWidget(m_commitBtn, 0, Qt::AlignRight);
+    side->addStretch();
+    side->addWidget(m_allBranches, 0, Qt::AlignRight);
+    head->addLayout(side);
     cl->addLayout(head);
     cl->addWidget(m_commits, 1);
 
@@ -279,6 +317,8 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     connect(m_commits, &QTreeWidget::currentItemChanged, this, &LogWindow::showCommit);
     m_commits->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_commits, &QWidget::customContextMenuRequested, this, &LogWindow::showCommitMenu);
+    m_files->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_files, &QWidget::customContextMenuRequested, this, &LogWindow::showFileMenu);
     connect(m_files, &QTreeWidget::currentItemChanged, this, &LogWindow::showFileDiff);
     connect(m_allBranches, &QCheckBox::toggled, this, &LogWindow::reload);
     // Fetch the next batch as the list nears its end.
@@ -291,11 +331,26 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
 
     // --- keyboard
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { reload(); });
-    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { close(); });
+    for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
+        new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Commit); });
+    connect(m_commitBtn, &QToolButton::clicked, this, [this] { OgWindow::go(this, OgWindow::Commit); });
+    connect(m_commits, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
+        if (m_log.value(it->data(0, RowRole).toInt()).hash == WorkingHash)
+            OgWindow::go(this, OgWindow::Commit);
+    });
+    new QShortcut(QKeySequence(QStringLiteral("Esc")), this, [this] { OgWindow::back(this); });
 
     reload();
     applyTheme();
     m_commits->setFocus();
+}
+
+void LogWindow::showEvent(QShowEvent *e)
+{
+    QWidget::showEvent(e);
+    if (m_shownBefore)
+        reload();   // back from og commit or resolve, which may have changed history
+    m_shownBefore = true;
 }
 
 void LogWindow::reload()
@@ -315,6 +370,23 @@ void LogWindow::reload()
     {
         QSignalBlocker block(m_commits);
         m_commits->clear();
+    }
+    // Anything not committed yet gets a row of its own above HEAD, joined to it.
+    m_working = false;
+    const QString head = QString::fromUtf8(
+        m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"), QStringLiteral("HEAD")}).out).trimmed();
+    if (!head.isEmpty() && !m_repo.status().isEmpty()) {
+        LogCommit w;
+        w.hash = WorkingHash;
+        w.parents = {head};
+        w.subject = tr("Working changes");
+        m_log.push_back(w);
+        m_graph.push_back(m_layout.add(w.hash, w.parents));
+        auto *it = new QTreeWidgetItem;
+        it->setData(0, RowRole, 0);
+        it->setToolTip(0, tr("Changes not committed yet. Double-click to commit them."));
+        m_commits->addTopLevelItem(it);
+        m_working = true;
     }
     loadMore();
 
@@ -341,7 +413,8 @@ void LogWindow::loadMore()
     if (m_exhausted || m_loading)
         return;
     m_loading = true;
-    const QVector<LogCommit> batch = m_repo.log(int(m_log.size()), BatchSize, m_allBranches->isChecked());
+    const int loaded = int(m_log.size()) - (m_working ? 1 : 0);   // the working row isn't history
+    const QVector<LogCommit> batch = m_repo.log(loaded, BatchSize, m_allBranches->isChecked());
     if (batch.size() < BatchSize)
         m_exhausted = true;
 
@@ -384,6 +457,10 @@ void LogWindow::showCommit()
     if (c.hash == m_shownCommit)
         return;
     m_shownCommit = c.hash;
+    if (c.hash == WorkingHash) {
+        showWorkingChanges();
+        return;
+    }
 
     QStringList parents;
     for (const QString &p : c.parents)
@@ -398,6 +475,45 @@ void LogWindow::showCommit()
     m_details->setPlainText(details);
 
     m_commitFiles = m_repo.changedFiles(baseOf(c), c.hash);
+    listCommitFiles();
+    if (m_files->topLevelItemCount() == 0)
+        m_diff->showMessage({}, c.parents.size() > 1 ? tr("Merge with no changes against its first parent")
+                                                     : tr("No file changes"));
+}
+
+// Everything not committed yet, against HEAD: staged and unstaged alike, and
+// untracked files.
+void LogWindow::showWorkingChanges()
+{
+    m_commitFiles = m_repo.workingChanges(QStringLiteral("HEAD"));
+    int staged = 0, unstaged = 0, untracked = 0;
+    for (const FileEntry &e : m_repo.status()) {
+        if (e.untracked()) {
+            ++untracked;
+            continue;
+        }
+        if (e.index != u' ')
+            ++staged;
+        if (e.worktree != u' ')
+            ++unstaged;
+    }
+    QStringList counts;
+    if (staged)
+        counts << tr("%1 staged").arg(staged);
+    if (unstaged)
+        counts << tr("%1 not staged").arg(unstaged);
+    if (untracked)
+        counts << tr("%1 untracked").arg(untracked);
+    m_details->setPlainText(tr("Working changes, not committed yet: %1.\n\n"
+                               "Shown against HEAD. Double-click the row, or right-click → Commit…, "
+                               "to commit them.").arg(counts.join(QStringLiteral(", "))));
+    listCommitFiles();
+    if (m_files->topLevelItemCount() == 0)
+        m_diff->showMessage({}, tr("No changes against HEAD"));
+}
+
+void LogWindow::listCommitFiles()
+{
     {
         QSignalBlocker block(m_files);
         m_files->clear();
@@ -415,9 +531,6 @@ void LogWindow::showCommit()
     m_fileCount->setText(m_commitFiles.size() == 1 ? tr("1 file") : tr("%1 files").arg(m_commitFiles.size()));
     if (m_files->topLevelItemCount() > 0)
         m_files->setCurrentItem(m_files->topLevelItem(0));
-    else
-        m_diff->showMessage({}, c.parents.size() > 1 ? tr("Merge with no changes against its first parent")
-                                                     : tr("No file changes"));
 }
 
 void LogWindow::showFileDiff()
@@ -428,6 +541,22 @@ void LogWindow::showFileDiff()
         return;
     const LogCommit &c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
+    if (c.hash == WorkingHash) {
+        const QString before = QStringLiteral("HEAD:") + (f.oldPath.isEmpty() ? f.path : f.oldPath);
+        const QString onDisk = QDir(m_repo.root()).filePath(f.path);
+        const ImageFetch images = [this, before, onDisk] {
+            ImageSides s;
+            const GitResult b = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), before});
+            s.hasBefore = b.ok();
+            s.before = b.out;
+            QFile file(onDisk);
+            s.hasAfter = file.open(QIODevice::ReadOnly);
+            s.after = file.readAll();
+            return s;
+        };
+        m_diff->showDiff(fi->text(0), m_repo.diffWorking(f, QStringLiteral("HEAD")), false, images);
+        return;
+    }
     // For an image: the file in the parent (under its old name) and in the commit.
     const QString before = baseOf(c) + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
     const QString after = c.hash + QLatin1Char(':') + f.path;
@@ -452,12 +581,112 @@ void LogWindow::showCommitMenu(const QPoint &pos)
         return;
     const LogCommit c = m_log.at(it->data(0, RowRole).toInt());
     QMenu menu(this);
+    if (c.hash == WorkingHash) {
+        if (menu.addAction(tr("Commit…")) == menu.exec(m_commits->viewport()->mapToGlobal(pos)))
+            OgWindow::go(this, OgWindow::Commit);
+        return;
+    }
     QAction *revert = menu.addAction(tr("Revert changes by this commit…"));
     revert->setEnabled(m_repo.operation().isEmpty());
     if (!revert->isEnabled())
         revert->setToolTip(tr("Finish the %1 in progress first").arg(m_repo.operation()));
     if (menu.exec(m_commits->viewport()->mapToGlobal(pos)) == revert)
         revertCommit(c);
+}
+
+void LogWindow::showFileMenu(const QPoint &pos)
+{
+    auto *fi = m_files->itemAt(pos);
+    auto *ci = m_commits->currentItem();
+    if (!fi || !ci)
+        return;
+    const LogCommit c = m_log.at(ci->data(0, RowRole).toInt());
+    const FileEntry f = m_commitFiles.at(fi->data(0, RowRole).toInt());
+    QMenu menu(this);
+    QAction *revert = nullptr;
+    if (c.hash == WorkingHash) {
+        revert = menu.addAction(tr("Revert to the last commit…"));
+        revert->setEnabled(f.commitStatus != u'?' && f.commitStatus != u'U');
+    } else {
+        revert = menu.addAction(tr("Revert changes to this file by this commit…"));
+        revert->setEnabled(m_repo.operation().isEmpty());
+    }
+    if (menu.exec(m_files->viewport()->mapToGlobal(pos)) != revert)
+        return;
+    if (c.hash == WorkingHash)
+        revertWorkingFile(f);
+    else
+        revertFileChange(c, f);
+}
+
+// One file of the working changes back to HEAD, staged and unstaged alike. A
+// file new to the index is only un-added and stays on disk, untracked.
+void LogWindow::revertWorkingFile(const FileEntry &f)
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Revert %1").arg(f.path));
+    box.setText(tr("Revert %1 to the last commit?").arg(f.path));
+    box.setInformativeText(f.commitStatus == u'A' ? tr("It will no longer be added; the file stays on disk as untracked.")
+                                                  : tr("Its uncommitted changes, staged or not, will be lost."));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(tr("Revert"));
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Ok)
+        return;
+    GitResult r;
+    if (f.commitStatus == u'A') {
+        r = m_repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
+    } else {
+        QStringList fromHead{f.oldPath.isEmpty() ? f.path : f.oldPath};
+        r = m_repo.run(QStringList{QStringLiteral("restore"), QStringLiteral("--source=HEAD"), QStringLiteral("--staged"),
+                                   QStringLiteral("--worktree"), QStringLiteral("--")} << fromHead);
+        if (r.ok() && !f.oldPath.isEmpty())   // a rename: the new name is only un-added
+            r = m_repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
+    }
+    if (!r.ok())
+        QMessageBox::warning(this, tr("Could not revert %1").arg(f.path), QString::fromUtf8(r.err));
+    reload();
+}
+
+// What the commit did to one file, undone in the working tree (not committed),
+// like "Revert changes by this commit" for just that file. Later changes to the
+// same lines make it fail rather than guess.
+void LogWindow::revertFileChange(const LogCommit &c, const FileEntry &f)
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("Revert %1").arg(f.path));
+    box.setText(tr("Undo what %1 did to %2?").arg(c.hash.left(8), f.path));
+    box.setInformativeText(tr("The change is reversed in your working tree, not committed, so you can review it first."));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(tr("Revert"));
+    box.setDefaultButton(QMessageBox::Ok);
+    if (box.exec() != QMessageBox::Ok)
+        return;
+
+    QStringList diffArgs{QStringLiteral("diff"), QStringLiteral("--binary"), QStringLiteral("--no-color"),
+                         QStringLiteral("--no-ext-diff"), QStringLiteral("-M"), baseOf(c), c.hash, QStringLiteral("--")};
+    if (!f.oldPath.isEmpty())
+        diffArgs << f.oldPath;
+    const GitResult patch = m_repo.run(diffArgs << f.path);
+    const GitResult r = patch.ok() ? m_repo.run({QStringLiteral("apply"), QStringLiteral("-R")}, patch.out) : patch;
+    if (!r.ok()) {
+        QMessageBox::warning(this, tr("Could not revert %1").arg(f.path),
+                             tr("Later changes to %1 get in the way of undoing this one.").arg(f.path)
+                                 + QStringLiteral("\n\n") + QString::fromUtf8(r.err).trimmed().right(1500));
+        return;
+    }
+    QMessageBox done(this);
+    done.setIcon(QMessageBox::Information);
+    done.setWindowTitle(tr("Reverted"));
+    done.setText(tr("What %1 did to %2 is undone in your working tree.").arg(c.hash.left(8), f.path));
+    QPushButton *commitNow = done.addButton(tr("Go to commit"), QMessageBox::AcceptRole);
+    done.addButton(tr("Later"), QMessageBox::RejectRole);
+    done.exec();
+    reload();
+    if (done.clickedButton() == commitNow)
+        OgWindow::go(this, OgWindow::Commit);
 }
 
 // TortoiseGit's "Revert changes by this commit": the commit's changes are
@@ -487,11 +716,6 @@ void LogWindow::revertCommit(const LogCommit &c)
     const GitResult r = m_repo.run(args << c.hash);
     const QString output = QString::fromUtf8(r.out + r.err).trimmed();
 
-    auto open = [this](QWidget *w) {
-        w->setAttribute(Qt::WA_DeleteOnClose);
-        w->resize(size());
-        w->show();
-    };
     if (r.ok()) {
         QMessageBox done(this);
         done.setIcon(QMessageBox::Information);
@@ -502,7 +726,7 @@ void LogWindow::revertCommit(const LogCommit &c)
         done.addButton(tr("Later"), QMessageBox::RejectRole);
         done.exec();
         if (done.clickedButton() == commitNow)
-            open(new CommitWindow(m_repo.root()));
+            OgWindow::go(this, OgWindow::Commit);
     } else if (!m_repo.unmerged().isEmpty()) {
         QMessageBox clash(this);
         clash.setIcon(QMessageBox::Warning);
@@ -513,7 +737,7 @@ void LogWindow::revertCommit(const LogCommit &c)
         clash.addButton(tr("Later"), QMessageBox::RejectRole);
         clash.exec();
         if (clash.clickedButton() == resolve)
-            open(new ResolveWindow(m_repo.root()));
+            OgWindow::go(this, OgWindow::Resolve);
     } else {
         QMessageBox::warning(this, tr("Could not revert %1").arg(c.hash.left(8)), output.right(1500));
     }
@@ -524,9 +748,11 @@ QColor LogWindow::statusColor(QChar status) const
     const ThemeColors &c = Theme::instance().colors();
     switch (status.toLatin1()) {
     case 'A': return c.green;
-    case 'D': return c.red;
+    case 'D':
+    case 'U': return c.red;
     case 'R':
     case 'C': return c.accent;
+    case '?': return c.muted;
     default:  return c.yellow;
     }
 }

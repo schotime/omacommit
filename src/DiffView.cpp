@@ -689,8 +689,115 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_removed = m_added = 0;
     m_imageFetch = nullptr;
     m_textDiff.clear();
+    m_lineAction = nullptr;
     setEditable(false);
     updateNav();
+}
+
+void DiffView::setLineActions(const QString &verb, std::function<void(const Selection &)> action)
+{
+    m_lineVerb = verb;
+    m_lineAction = std::move(action);
+}
+
+DiffView::Selection DiffView::blockAt(int row) const
+{
+    Selection s;
+    if (row < 0 || row >= m_l.size() || !isChanged(row))
+        return s;
+    int bs = row, be = row + 1;
+    while (bs > 0 && isChanged(bs - 1))
+        --bs;
+    while (be < m_l.size() && isChanged(be))
+        ++be;
+    for (int i = bs; i < be; ++i) {
+        if (m_l.at(i).kind != DiffPane::Empty)
+            s.left.insert(i);
+        if (m_r.at(i).kind != DiffPane::Empty)
+            s.right.insert(i);
+    }
+    return s;
+}
+
+// The selected lines when the pointer is in the selection, else the line under
+// it. Side by side a row's old and new line go together (a changed line is the
+// pair); inline they are separate lines, picked separately.
+DiffView::Selection DiffView::pickedLines(DiffPane *pane, int paneLine) const
+{
+    Selection s;
+    int first = paneLine, last = paneLine;
+    const QTextCursor c = pane->textCursor();
+    if (c.hasSelection()) {
+        const QTextDocument *doc = pane->document();
+        const int a = doc->findBlock(c.selectionStart()).blockNumber();
+        QTextBlock endBlock = doc->findBlock(c.selectionEnd());
+        int b = endBlock.blockNumber();
+        if (b > a && c.selectionEnd() == endBlock.position())
+            --b;   // a selection ending at a line's very start doesn't take that line
+        if (first >= a && first <= b) {
+            first = a;
+            last = b;
+        }
+    }
+    if (first < 0)
+        return s;
+    for (int line = first; line <= last; ++line) {
+        if (pane == m_inline) {
+            const int r = m_inlineToRow.value(line, -1);
+            if (r < 0 || line >= m_inline->lineCount() || !isChanged(r))
+                continue;
+            // Which half of the row this inline line is: its old line carries
+            // only the old number.
+            const DiffPane::Line &l = m_inline->lineAt(line);
+            if (l.kind == DiffPane::Removed)
+                s.left.insert(r);
+            else if (l.kind == DiffPane::Added)
+                s.right.insert(r);
+        } else if (line < m_l.size() && isChanged(line)) {
+            if (m_l.at(line).kind != DiffPane::Empty)
+                s.left.insert(line);
+            if (m_r.at(line).kind != DiffPane::Empty)
+                s.right.insert(line);
+        }
+    }
+    return s;
+}
+
+QStringList DiffView::linesApplied(const Selection &picked, bool toLeft, const QStringList &exactTarget) const
+{
+    QStringList out;
+    auto exact = [&](const DiffPane::Line &l) {
+        return l.number >= 1 && l.number <= exactTarget.size() ? exactTarget.at(l.number - 1) : l.text;
+    };
+    for (int i = 0; i < m_l.size();) {
+        if (!isChanged(i)) {
+            out << exact(toLeft ? m_l.at(i) : m_r.at(i));
+            ++i;
+            continue;
+        }
+        int be = i;
+        while (be < m_l.size() && isChanged(be))
+            ++be;
+        // Within a block the old lines come before the new ones, as in git.
+        for (int j = i; j < be; ++j) {
+            const DiffPane::Line &l = m_l.at(j);
+            if (l.kind == DiffPane::Empty)
+                continue;
+            const bool pickedHere = picked.left.contains(j);
+            if (toLeft ? !pickedHere : pickedHere)   // staging keeps unpicked old lines; unstaging restores picked ones
+                out << (toLeft ? exact(l) : l.text);
+        }
+        for (int j = i; j < be; ++j) {
+            const DiffPane::Line &r = m_r.at(j);
+            if (r.kind == DiffPane::Empty)
+                continue;
+            const bool pickedHere = picked.right.contains(j);
+            if (toLeft ? pickedHere : !pickedHere)   // staging adds picked new lines; unstaging keeps unpicked ones
+                out << (toLeft ? r.text : exact(r));
+        }
+        i = be;
+    }
+    return out;
 }
 
 // The file's two versions as pictures, when at least one of them is an image.
@@ -1130,7 +1237,8 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
     QAction *before = menu->actions().isEmpty() ? nullptr : menu->actions().constFirst();
 
     const bool showing = showingRows();
-    int row = pane->cursorForPosition(pos).blockNumber();
+    const int paneLine = pane->cursorForPosition(pos).blockNumber();
+    int row = paneLine;
     if (pane == m_inline)
         row = m_inlineToRow.value(row, -1);   // back to the aligned row it came from
     const bool onChange = showing && row >= 0 && row < m_l.size() && isChanged(row);
@@ -1142,6 +1250,22 @@ void DiffView::showContextMenu(DiffPane *pane, const QPoint &pos)
         menu->insertAction(before, a);
         return a;
     };
+    if (m_lineAction) {
+        const bool dirty = isDirty();
+        const QString later = dirty ? tr(" (save your edits first)") : QString();
+        auto run = [this](const Selection &s) {
+            const auto action = m_lineAction;   // it may replace itself by re-showing the file
+            action(s);
+        };
+        const Selection block = showing ? blockAt(row) : Selection();
+        const Selection lines = showing ? pickedLines(pane, paneLine) : Selection();
+        const int n = int(lines.left.size() + lines.right.size());
+        add(tr("%1 block").arg(m_lineVerb) + later, !block.isEmpty() && !dirty, [run, block] { run(block); });
+        const bool several = pane->textCursor().hasSelection() && n > 1;
+        add((several ? tr("%1 selected lines").arg(m_lineVerb) : tr("%1 line").arg(m_lineVerb)) + later,
+            n > 0 && !dirty, [run, lines] { run(lines); });
+        menu->insertSeparator(before);
+    }
     // A view with nowhere to save edits (history in the log) has nothing to offer here.
     if (!onSave) {
         menu->exec(pane->viewport()->mapToGlobal(pos));
