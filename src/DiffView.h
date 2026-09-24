@@ -5,6 +5,7 @@
 #include <QSet>
 #include <QPlainTextEdit>
 #include <QStringList>
+#include <QTextLayout>
 #include <QVector>
 #include <QWidget>
 
@@ -53,7 +54,9 @@ public:
     void setGroups(const QVector<Group> &groups, bool muteOthers);
 
     explicit DiffPane(QWidget *parent = nullptr);
-    void setLines(const QVector<Line> &lines);
+    void setLines(const QVector<Line> &lines);   // clears the syntax colours: set them after
+    // Syntax colours, one run of spans per line of the pane (empty: plain).
+    void setSyntax(const QVector<QVector<QTextLayout::FormatRange>> &perLine);
     // Recolours the rows without touching the text -- for an editable pane,
     // where replacing the text would lose the cursor and the undo history.
     void setKinds(const QVector<Line> &lines);
@@ -83,6 +86,7 @@ private:
     QVector<Line> m_lines;
     QVector<Group> m_groups;
     bool m_muteOthers = false;
+    QVector<QVector<QTextLayout::FormatRange>> m_syntax;
     DiffColors m_c;
     bool m_dual = false;
     bool m_showWs = false;
@@ -130,6 +134,8 @@ public:
     // Resolve window: a caption over each pane, tints instead of red/green,
     // and no Alt+Up/Down (the window uses them to move between conflicts).
     void setPaneCaptions(const QString &left, const QString &right);
+    // The file shown, for its language: set before showDiff.
+    void setFileName(const QString &path) { m_fileName = path; }
     // Resolve window: the conflicts as runs of aligned rows, framed and
     // numbered in both panes, with differences outside them drawn as merged
     // automatically. Empty clears it.
@@ -193,6 +199,7 @@ private:
     bool inlineWanted() const;
     void buildInline();
     void applyConflictRows();
+    void highlightRows();
     void updateMode();
     void updateNarrow();
     QScrollBar *activeScrollBar() const;
@@ -206,6 +213,8 @@ private:
     bool isChanged(int row) const;
     void gotoRow(int row);
     void updateNav();
+    bool rowInView(int row) const;
+    bool currentAway() const;
     void updateStats();
 
     DiffPane *m_left;
@@ -213,8 +222,6 @@ private:
     DiffPane *m_inline;
     QLabel *m_inlineCaption;
     ImageCompare *m_image;
-    bool rowInView(int row) const;
-    bool currentAway() const;
     QToolButton *m_imageBtn;
     ImageFetch m_imageFetch;
     QByteArray m_textDiff;         // an SVG's diff, to switch back to from its picture
@@ -243,6 +250,7 @@ private:
     Selection pickedLines(DiffPane *pane, int paneLine) const;   // paneLine: the pane's own line under the pointer
 
     QVector<DiffPane::Group> m_conflictRows;
+    QString m_fileName;
     QString m_lineVerb;
     std::function<void(const Selection &)> m_lineAction;
 

@@ -117,6 +117,9 @@ void Theme::load()
     c.green = get({"green", "color2"}, hex("#9ece6a"));
     c.yellow = get({"yellow", "color3"}, hex("#e0af68"));
     c.blue = get({"blue", "color4"}, hex("#7aa2f7"));
+    c.magenta = get({"magenta", "color5"}, hex("#bb9af7"));
+    c.cyan = get({"cyan", "color6"}, hex("#7dcfff"));
+    c.orange = get({"orange", "bright_red", "color9"}, hex("#ff9e64"));
     c.accent = get({"accent"}, c.blue);
 
     const bool lightFile = !m_path.isEmpty()

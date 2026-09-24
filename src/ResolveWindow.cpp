@@ -5,6 +5,7 @@
 #include "ElidedLabel.h"
 #include "FlowLayout.h"
 #include "OgWindow.h"
+#include "Syntax.h"
 #include "PageTabs.h"
 #include "Theme.h"
 
@@ -338,11 +339,11 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
                 if (m_conflicts.at(i).end < line)
                     k = i;
         }
-        if (k >= 0)
         // Nothing further that way (a single conflict, say): back to the one
         // being worked on, in case it was scrolled out of sight.
         if (k < 0)
             k = targetConflict();
+        if (k >= 0)
             gotoConflict(k);
     };
     connect(m_nextBtn, &QToolButton::clicked, this, [step] { step(1); });
@@ -671,6 +672,7 @@ void ResolveWindow::showSides()
         s.after = b.readAll();
         return s;
     };
+    m_top->setFileName(m_path);   // the language for syntax colours
     // Captions first: the picture view labels its sides with them.
     if (m_mineIsIncoming)
         m_top->setPaneCaptions(m_curLong, m_incLong);
@@ -752,6 +754,8 @@ QStringList ResolveWindow::mergedLines() const
 // section, the incoming side's, git's common-ancestor section if it wrote one.
 void ResolveWindow::parseMerged()
 {
+    if (m_highlighting)
+        return;   // only the colours changed
     const QStringList lines = mergedLines();
     QVector<DiffPane::Line> rows(lines.size());
     m_conflicts.clear();
@@ -789,6 +793,17 @@ void ResolveWindow::parseMerged()
         }
     }
     m_merged->setKinds(rows);
+    // The merged file in colour too. Laying the colours on counts as a change
+    // to the document, which would bring us straight back here.
+    if (!m_highlighting) {
+        m_highlighting = true;
+        QVector<Syntax::Spans> spans = Syntax::highlight(m_path, lines);
+        for (int i = 0; i < spans.size() && i < rows.size(); ++i)
+            if (rows.at(i).kind == DiffPane::Marker)
+                spans[i].clear();   // git's marker lines aren't code
+        m_merged->setSyntax(spans);
+        m_highlighting = false;
+    }
     matchOriginals();
     updateOpenFileState();
     updateActions();

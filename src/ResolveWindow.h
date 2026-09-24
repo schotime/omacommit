@@ -33,6 +33,7 @@ protected:
 
 private:
     bool m_shownBefore = false;
+    bool m_highlighting = false;
     // One unresolved conflict in the merged text, by line index of its markers.
     struct Conflict {
         int start = -1, base = -1, sep = -1, end = -1;

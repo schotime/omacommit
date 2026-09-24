@@ -541,6 +541,7 @@ void LogWindow::showFileDiff()
         return;
     const LogCommit &c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
+    m_diff->setFileName(f.path);   // the language for syntax colours
     if (c.hash == WorkingHash) {
         const QString before = QStringLiteral("HEAD:") + (f.oldPath.isEmpty() ? f.path : f.oldPath);
         const QString onDisk = QDir(m_repo.root()).filePath(f.path);

@@ -443,6 +443,7 @@ void CommitWindow::showCurrentDiff()
     }
     const FileEntry e = *entry;
     m_diffPath = e.path;
+    m_diff->setFileName(e.path);   // the language for syntax colours
     m_diffStaged = e.staged;
     m_wsRules = m_repo.whitespaceRules(e.path);
     const QString diskPath = QDir(m_repo.root()).filePath(e.path);

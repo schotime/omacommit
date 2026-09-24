@@ -9,10 +9,16 @@ diff of the selected file on the right, all colored by your current Omarchy them
 
 ```sh
 sudo pacman -S --needed qt6-base cmake base-devel
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+sudo pacman -S --needed syntax-highlighting   # optional: code in colour
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --build build -j
 cmake --install build
 ```
+
+It builds optimised (Release) unless you pass another `CMAKE_BUILD_TYPE`.
+Syntax highlighting uses KDE's library (`syntax-highlighting`, only needing
+Qt); without it og builds the same and shows code as plain text — CMake says
+which when configuring.
 
 That installs `~/.local/bin/og`,
 `~/.local/share/applications/omarchy-commit.desktop` and its icon
@@ -122,6 +128,12 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   side it has. An SVG opens as its text diff, with a *Picture* / *Source*
   button to switch (remembered). In `og resolve`, a conflicted image shows both
   sides above the buttons that pick one.
+- **Code is in colour** — keywords, strings, comments, numbers — in about 300
+  languages picked by file name, with the Omarchy theme's colours, in every
+  diff and in resolve's merged file. Each side's own file is highlighted, so
+  strings and comments over several lines come out right, inline too. A
+  changed word keeps the plain text colour over its highlight, so it stands
+  out and never vanishes into it.
 - **Whitespace** (the ⋯ button, remembered, in every window): *Show whitespace*
   draws spaces as `·` and tabs as `→`; *Ignore whitespace changes* hides changes
   that only add, remove or re-indent whitespace (`git diff -w`), with a

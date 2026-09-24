@@ -13,6 +13,7 @@ struct ThemeColors {
     QColor selectionBg, selectionFg;
     QColor muted, border, surface, hover;
     QColor red, green, yellow, blue;
+    QColor magenta, cyan, orange;     // for syntax highlighting
     // Picked from the theme's palette so they stay apart from each other, even
     // in themes whose named colours are close (accent == blue is common).
     QColor other;                     // the side that isn't yours, when resolving

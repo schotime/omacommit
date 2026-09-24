@@ -1,6 +1,7 @@
 #include "DiffView.h"
 #include "GitRepo.h"
 #include "ImageCompare.h"
+#include "Syntax.h"
 #include "Theme.h"
 
 #include <QEvent>
@@ -166,8 +167,26 @@ void DiffPane::setLines(const QVector<Line> &lines)
     int i = 0;
     for (QTextBlock b = document()->begin(); b.isValid() && i < lines.size(); b = b.next(), ++i)
         b.setUserState(lines.at(i).kind == Empty ? FillerState : -1);
+    m_syntax.clear();
     updateGutterWidth();
     viewport()->update();
+}
+
+// Laid straight onto each line's layout, as QSyntaxHighlighter does, so the
+// text itself -- and the undo history of an edited pane -- is untouched.
+void DiffPane::setSyntax(const QVector<QVector<QTextLayout::FormatRange>> &perLine)
+{
+    if (perLine.isEmpty() && m_syntax.isEmpty())
+        return;
+    m_syntax = perLine;
+    QTextDocument *doc = document();
+    const bool modified = doc->isModified();
+    int i = 0;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next(), ++i)
+        if (QTextLayout *layout = b.layout())
+            layout->setFormats(i < m_syntax.size() ? m_syntax.at(i) : QList<QTextLayout::FormatRange>());
+    doc->markContentsDirty(0, doc->characterCount());
+    doc->setModified(modified);
 }
 
 void DiffPane::setGroups(const QVector<Group> &groups, bool muteOthers)
@@ -607,6 +626,9 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
         QObject::connect(b, &QScrollBar::valueChanged, a, &QScrollBar::setValue);
     };
     sync(m_left->verticalScrollBar(), m_right->verticalScrollBar());
+    // Whether ↑↓ have somewhere to go depends on what is in view.
+    for (DiffPane *pane : {m_right, m_inline})
+        connect(pane->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { updateNav(); });
     sync(m_left->horizontalScrollBar(), m_right->horizontalScrollBar());
 
     connect(m_save, &QToolButton::clicked, this, [this] {
@@ -626,9 +648,6 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
             m_prefInline = true;
             m_forceSplit = false;
         }
-    // Whether ↑↓ have somewhere to go depends on what is in view.
-    for (DiffPane *pane : {m_right, m_inline})
-        connect(pane->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { updateNav(); });
         QSettings().setValue(QStringLiteral("diff/inline"), m_prefInline);
         updateMode();
     });
@@ -996,6 +1015,7 @@ void DiffView::applyTheme()
     m_inline->setColors(c);
     updateMode();   // the mode icon's fallback colour follows the theme
     updateStats();
+    highlightRows();   // the syntax colours are the theme's too
 }
 
 void DiffView::updateStats()
@@ -1545,6 +1565,62 @@ void DiffView::buildInline()
     }
     m_inline->setLines(lines);
     applyConflictRows();
+    highlightRows();
+}
+
+// Syntax colours stop at a line's highlighted change: over the stronger
+// background there, a coloured token can all but vanish, and plain text also
+// makes the change itself stand out.
+static Syntax::Spans outsideChange(const Syntax::Spans &spans, const DiffPane::Line &l)
+{
+    if (l.hlEnd <= l.hlStart || l.hlStart < 0)
+        return spans;
+    Syntax::Spans out;
+    for (const QTextLayout::FormatRange &s : spans) {
+        const int end = s.start + s.length;
+        if (s.start < l.hlStart)
+            out << QTextLayout::FormatRange{s.start, qMin(end, l.hlStart) - s.start, s.format};
+        if (end > l.hlEnd)
+            out << QTextLayout::FormatRange{qMax(s.start, l.hlEnd), end - qMax(s.start, l.hlEnd), s.format};
+    }
+    return out;
+}
+
+// Each side's own file is highlighted -- its lines in order, without the
+// filler rows -- and the colours laid onto the rows it shows in. Inline, a
+// removed line takes the old file's colours and every other line the new's,
+// so interleaving the two never confuses a string or a comment.
+void DiffView::highlightRows()
+{
+    QStringList left, right;
+    QVector<int> leftAt(m_l.size(), -1), rightAt(m_r.size(), -1);
+    for (int i = 0; i < m_l.size(); ++i) {
+        if (m_l.at(i).kind != DiffPane::Empty) {
+            leftAt[i] = int(left.size());
+            left << m_l.at(i).text;
+        }
+        if (m_r.at(i).kind != DiffPane::Empty) {
+            rightAt[i] = int(right.size());
+            right << m_r.at(i).text;
+        }
+    }
+    const QVector<Syntax::Spans> ls = Syntax::highlight(m_fileName, left);
+    const QVector<Syntax::Spans> rs = Syntax::highlight(m_fileName, right);
+    QVector<Syntax::Spans> lp(m_l.size()), rp(m_r.size()), ip;
+    for (int i = 0; i < m_l.size(); ++i) {
+        lp[i] = outsideChange(ls.value(leftAt.at(i)), m_l.at(i));
+        rp[i] = outsideChange(rs.value(rightAt.at(i)), m_r.at(i));
+    }
+    for (int j = 0; j < m_inline->lineCount(); ++j) {
+        const int row = m_inlineToRow.value(j, -1);
+        ip << (m_inline->lineAt(j).kind == DiffPane::Removed ? lp.value(row) : rp.value(row));
+    }
+    const bool rendering = m_rendering;
+    m_rendering = true;   // not typing
+    m_left->setSyntax(ls.isEmpty() ? QVector<Syntax::Spans>() : lp);
+    m_right->setSyntax(rs.isEmpty() ? QVector<Syntax::Spans>() : rp);
+    m_inline->setSyntax(ls.isEmpty() && rs.isEmpty() ? QVector<Syntax::Spans>() : ip);
+    m_rendering = rendering;
 }
 
 // Shows whichever view is wanted, keeping the same part of the file in view.
