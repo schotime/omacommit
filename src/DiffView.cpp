@@ -425,8 +425,8 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     GitRepo::setIgnoreWhitespace(m_wsIgnore->isChecked());
     m_wsNote = new QLabel(tr("whitespace ignored"));
     m_wsNote->setObjectName(QStringLiteral("muted"));
-    m_wsNote->setToolTip(tr("Changes that only add, remove or re-indent whitespace are hidden, "
-                            "and the diff is read-only. Turn it off in the ⋯ menu."));
+    m_wsNote->setToolTip(tr("Changes that only add, remove or re-indent whitespace are hidden "
+                            "(they are still saved and committed). Turn it off in the ⋯ menu."));
     m_wsNote->setVisible(m_wsIgnore->isChecked());
     m_issueNote = new QLabel;
     m_issueNote->setToolTip(tr("Trailing whitespace and similar problems on lines you are adding, by git's "
@@ -868,10 +868,11 @@ void DiffView::updateNav()
 
 void DiffView::setEditable(bool editable)
 {
-    // Ignoring whitespace, git shows unchanged-looking lines with the new side's
-    // text, so "use left" could not restore the old whitespace: read-only then.
+    // Ignoring whitespace changes what is shown, not what is edited: the right
+    // side is still the file exactly (git takes unchanged-looking lines from
+    // the new side), and a changed block's left lines are the old ones.
     m_wantEditable = editable;
-    m_editable = editable && showingRows() && !GitRepo::ignoreWhitespace();
+    m_editable = editable && showingRows();
     m_right->setReadOnly(!m_editable);
     updateHeader();
 }
@@ -982,7 +983,9 @@ void DiffView::take(Take how, int row)
         return;
     flushPending();
     QStringList next;
-    if (how == Take::WholeFile) {
+    if (how == Take::WholeFile && leftFile) {
+        next = linesOf(leftFile());   // exact, whitespace and all
+    } else if (how == Take::WholeFile) {
         for (const DiffPane::Line &l : m_l)
             if (l.kind != DiffPane::Empty)
                 next << l.text;

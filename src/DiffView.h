@@ -91,6 +91,9 @@ public:
     std::function<bool(const QStringList &)> onSave;          // write them; false if not written
     std::function<void()> onSaveRequested;                    // the Save button
     std::function<void()> onOptionsChanged;                   // whitespace settings: show the diff again
+    // The left file as it is, for "Use left whole file": with whitespace
+    // ignored, the left pane's unchanged lines carry the right side's whitespace.
+    std::function<QByteArray()> leftFile;
     bool showWhitespace() const;
     // Marks whitespace problems on the right side, keyed by its 1-based line.
     void setWhitespaceIssues(const QHash<int, QString> &byLine);

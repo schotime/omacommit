@@ -99,10 +99,9 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 - **Whitespace** (the ⋯ button, remembered, in every window): *Show whitespace*
   draws spaces as `·` and tabs as `→`; *Ignore whitespace changes* hides changes
   that only add, remove or re-indent whitespace (`git diff -w`), with a
-  *whitespace ignored* note in the header. While ignoring, the diff is read-only —
-  git shows the unchanged-looking lines with the new side's whitespace, so
-  *Use left* couldn't restore the old — and the option waits until unsaved edits
-  are saved or discarded. It only changes what you see, never what is committed.
+  *whitespace ignored* note in the header. You can still edit and use the *Use
+  left …* actions while ignoring; the option waits until unsaved edits are saved
+  or discarded. It only changes what you see, never what is saved or committed.
 - **Whitespace problems are flagged** in `og commit`, on the lines you are adding:
   trailing whitespace, a space before a tab in the indent, a blank line added at
   the end of the file — whatever `git diff --check` would report, under your
