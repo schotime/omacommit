@@ -1559,12 +1559,8 @@ void CommitWindow::showEvent(QShowEvent *e)
         return;
     }
     m_sized = true;
-    m_message->ensurePolished();
     const int total = m_split->width();
-    const int text = m_message->fontMetrics().horizontalAdvance(QString(72, QLatin1Char('m')));
-    const int want = text + 2 * int(m_message->document()->documentMargin()) + 2 * m_message->frameWidth()
-                   + m_message->verticalScrollBar()->sizeHint().width() + 28;   // + the panel's margins
-    const int left = qBound(int(total * 0.30), want, int(total * 0.45));
+    const int left = OgWindow::sidebarWidth(total);
     m_split->setSizes({left, total - left});
 }
 

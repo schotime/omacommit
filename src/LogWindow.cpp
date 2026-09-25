@@ -311,7 +311,8 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     // Resizing the window resizes the right side; the left pane keeps its width.
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 1);
-    split->setSizes({700, 700});   // half: the commit table is what you read here
+    split->setSizes({500, 900});   // provisional; showEvent sizes it as the commit page does
+    m_split = split;
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -351,9 +352,15 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
 void LogWindow::showEvent(QShowEvent *e)
 {
     QWidget::showEvent(e);
-    if (m_shownBefore)
+    if (m_shownBefore) {
         reload();   // back from og commit or resolve, which may have changed history
+        return;
+    }
     m_shownBefore = true;
+    // Opened from another page, the window then carries that page's divider over.
+    const int total = m_split->width();
+    const int left = OgWindow::sidebarWidth(total);
+    m_split->setSizes({left, total - left});
 }
 
 void LogWindow::reload()

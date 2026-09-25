@@ -25,6 +25,10 @@ public:
     // From a page: back to the page og was started on, or, on that page,
     // close the window. Esc, and a commit that leaves nothing to do.
     static void back(QWidget *from);
+    // The left pane's width when a page first opens in a window `total` wide:
+    // room for a 50-column summary line in the message box, no more however
+    // wide the window, so the rest goes to the diff.
+    static int sidebarWidth(int total);
 
 protected:
     void closeEvent(QCloseEvent *e) override;

@@ -6,6 +6,8 @@
 #include <QHash>
 #include <QWidget>
 
+class QSplitter;
+
 class DiffView;
 class QCheckBox;
 class QLabel;
@@ -56,6 +58,7 @@ private:
     QCheckBox *m_allBranches;
     PageTabs *m_tabs;
     bool m_shownBefore = false;
+    QSplitter *m_split;
     bool m_working = false;   // the first row is the working changes, not a commit
     QTreeWidget *m_commits;
     QPlainTextEdit *m_details;

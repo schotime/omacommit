@@ -4,6 +4,8 @@
 #include "ResolveWindow.h"
 
 #include <QCloseEvent>
+#include <QPlainTextEdit>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
@@ -49,6 +51,18 @@ void OgWindow::go(Page p, const QString &file)
     m_stack->setCurrentWidget(w);
     setLeftWidth(w, left);
     updateTitle();
+}
+
+int OgWindow::sidebarWidth(int total)
+{
+    // Measured on an editor styled like the message box (every text editor
+    // gets the code font), so it is right on any page.
+    QPlainTextEdit probe;
+    probe.ensurePolished();
+    const int want = probe.fontMetrics().averageCharWidth() * 50 + 2 * int(probe.document()->documentMargin())
+                   + 2 * probe.frameWidth() + probe.verticalScrollBar()->sizeHint().width()
+                   + 28;   // + the panel's margins
+    return qBound(int(total * 0.25), want, int(total * 0.45));
 }
 
 static QSplitter *pageSplit(QWidget *page)
