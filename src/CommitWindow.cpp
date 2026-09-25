@@ -70,10 +70,18 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
 
-    // Prefer Omarchy's default, then other agents installed on PATH.
+    // Restore the last selection when it is installed; otherwise use Omarchy's
+    // default (or the first agent on PATH).
     m_agents = Agent::available();
-    if (!m_agents.isEmpty())
+    if (!m_agents.isEmpty()) {
         m_agent = m_agents.first();
+        const QString savedAgent = QSettings().value(QStringLiteral("write/agent")).toString();
+        for (const Agent &agent : m_agents)
+            if (agent.id == savedAgent) {
+                m_agent = agent;
+                break;
+            }
+    }
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setVisible(!m_agents.isEmpty());
@@ -84,6 +92,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
             choice->setCheckable(true);
             connect(choice, &QAction::triggered, this, [this, a] {
                 m_agent = a;
+                QSettings().setValue(QStringLiteral("write/agent"), a.id);
                 updateWriteButton();
             });
         }
