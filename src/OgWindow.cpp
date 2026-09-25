@@ -2,13 +2,51 @@
 #include "CommitWindow.h"
 #include "LogWindow.h"
 #include "ResolveWindow.h"
+#include "GitRepo.h"
+#ifdef OG_PORTAL
+#include "Portal.h"
+#endif
 
 #include <QCloseEvent>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMenu>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QSettings>
+#include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+
+static const int MaxRecentRepos = 15;
+
+// Most recent first, each repo once.
+static QStringList recentRepos()
+{
+    return QSettings().value(QStringLiteral("recentRepos")).toStringList();
+}
+
+static void rememberRepo(const QString &root)
+{
+    QStringList repos = recentRepos();
+    repos.removeAll(root);
+    repos.prepend(root);
+    while (repos.size() > MaxRecentRepos)
+        repos.removeLast();
+    QSettings().setValue(QStringLiteral("recentRepos"), repos);
+}
+
+// ~/Projects/og rather than /home/you/Projects/og.
+static QString shortPath(const QString &path)
+{
+    const QString home = QDir::homePath();
+    if (path == home || path.startsWith(home + QLatin1Char('/')))
+        return QLatin1Char('~') + path.mid(home.size());
+    return QDir::toNativeSeparators(path);
+}
 
 OgWindow::OgWindow(const QString &root, QWidget *parent) : QWidget(parent), m_root(root)
 {
@@ -16,6 +54,9 @@ OgWindow::OgWindow(const QString &root, QWidget *parent) : QWidget(parent), m_ro
     auto *l = new QVBoxLayout(this);
     l->setContentsMargins(0, 0, 0, 0);
     l->addWidget(m_stack);
+
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { chooseRepo(); });
+    rememberRepo(m_root);
 }
 
 QWidget *OgWindow::page(Page p) const
@@ -114,7 +155,7 @@ void OgWindow::updateTitle()
 
 // Every page gets its say: the commit page keeps its draft and asks about
 // unsaved edits, the resolve page about its unsaved merge.
-void OgWindow::closeEvent(QCloseEvent *e)
+bool OgWindow::closePages()
 {
     QWidget *current = m_stack->currentWidget();
     QVector<QWidget *> pages{current};
@@ -126,9 +167,73 @@ void OgWindow::closeEvent(QCloseEvent *e)
             m_stack->setCurrentWidget(p);
             p->show();
             updateTitle();
-            e->ignore();
-            return;
+            return false;
         }
     }
-    e->accept();
+    return true;
+}
+
+void OgWindow::closeEvent(QCloseEvent *e)
+{
+    if (closePages())
+        e->accept();
+    else
+        e->ignore();
+}
+
+void OgWindow::chooseRepo()
+{
+    QMenu menu(this);
+    for (const QString &root : recentRepos()) {
+        if (QDir::cleanPath(root) == QDir::cleanPath(m_root) || !QFileInfo(root).isDir())
+            continue;   // where we are, or gone since
+        QAction *a = menu.addAction(QStringLiteral("%1\t%2").arg(QFileInfo(root).fileName(), shortPath(root)));
+        connect(a, &QAction::triggered, this, [this, root] { openRepo(root); });
+    }
+    if (!menu.isEmpty())
+        menu.addSeparator();
+    connect(menu.addAction(tr("Open Repository…")), &QAction::triggered, this, [this] {
+        const QString title = tr("Choose a Git repository");
+        const QString from = QFileInfo(m_root).absolutePath();
+        QString picked;
+#ifdef OG_PORTAL
+        if (Portal::pickDirectory(title, from, &picked) == Portal::Result::Unavailable)
+#endif
+            picked = QFileDialog::getExistingDirectory(this, title, from);
+        if (picked.isEmpty())
+            return;
+        const QString root = GitRepo::findRoot(picked);
+        if (root.isEmpty()) {
+            QMessageBox::warning(this, tr("Open Repository"), tr("%1 is not inside a Git repository.").arg(picked));
+            return;
+        }
+        openRepo(root);
+    });
+    if (QAction *first = menu.actions().value(0))
+        menu.setActiveAction(first);
+    // Near the top of the window, centred, like a command palette.
+    const QSize size = menu.sizeHint();
+    menu.exec(mapToGlobal(QPoint((width() - size.width()) / 2, height() / 8)));
+}
+
+void OgWindow::openRepo(const QString &root)
+{
+    if (QDir::cleanPath(root) == QDir::cleanPath(m_root) || !closePages())
+        return;
+    // Resolve was about the old repo's conflicts: the new one opens on its commit page.
+    const Page current = m_current == Resolve ? Commit : m_current;
+    const int left = leftWidth(m_stack->currentWidget());
+    while (m_stack->count()) {
+        QWidget *w = m_stack->widget(0);
+        m_stack->removeWidget(w);
+        w->deleteLater();
+    }
+    // deleteLater leaves these set until the event loop gets to it.
+    m_commit = nullptr;
+    m_log = nullptr;
+    m_resolve = nullptr;
+    m_root = root;
+    rememberRepo(m_root);
+    go(current);
+    setLeftWidth(m_stack->currentWidget(), left);
 }

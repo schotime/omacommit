@@ -30,11 +30,18 @@ public:
     // wide the window, so the rest goes to the diff.
     static int sidebarWidth(int total);
 
+    // Ctrl+O: a menu of the repos og has recently opened, and a folder chooser.
+    void chooseRepo();
+    // Shows `root` in this window instead, on the same page, once every page
+    // has agreed to close (drafts kept, unsaved edits asked about).
+    void openRepo(const QString &root);
+
 protected:
     void closeEvent(QCloseEvent *e) override;
 
 private:
     QWidget *page(Page p) const;
+    bool closePages();
     void updateTitle();
     int leftWidth(QWidget *page) const;
     void setLeftWidth(QWidget *page, int left);

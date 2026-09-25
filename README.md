@@ -124,6 +124,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 | Ctrl+S | Save edits made in the diff |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo edits in the diff |
 | Ctrl+L, Ctrl+Tab | Switch between the commit dialog and the log (from resolve: the log) |
+| Ctrl+O | Open a recently used repository, or choose another |
 | F5 | Refresh |
 | Esc | Back to the page og started on; there, close (the message is kept as a draft) |
 
