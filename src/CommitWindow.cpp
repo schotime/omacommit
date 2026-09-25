@@ -550,7 +550,8 @@ void CommitWindow::showCurrentDiff()
                 w->m_diff->showDiff(title + tr("  (staged)"), d.diff, false, images);
                 w->m_diff->setWhitespaceIssues(d.issues);
                 if (d.inIndex && isUtf8(d.index) && isUtf8(w->m_wsBase))
-                    w->m_diff->setLineActions(tr("Unstage"), [w](const DiffView::Selection &s) { w->unstageLines(s); });
+                    w->m_diff->setLineActions(tr("Unstage"), [w](const DiffView::Selection &s) { w->unstageLines(s); },
+                                              QStringLiteral("−"));
                 return;
             }
             // Lines are written back as UTF-8, which would mangle anything else.
@@ -580,7 +581,8 @@ void CommitWindow::showCurrentDiff()
                 w->m_diff->setEditable(false);
             w->m_diff->setWhitespaceIssues(d.issues);   // on the lines staging this would add
             if (editable && faithful && isUtf8(d.index))
-                w->m_diff->setLineActions(tr("Stage"), [w](const DiffView::Selection &s) { w->stageLines(s); });
+                w->m_diff->setLineActions(tr("Stage"), [w](const DiffView::Selection &s) { w->stageLines(s); },
+                                          QStringLiteral("+"));
         }, Qt::QueuedConnection);
     });
 }

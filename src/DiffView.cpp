@@ -29,11 +29,13 @@ namespace {
 
 class Gutter : public QWidget {
 public:
-    explicit Gutter(DiffPane *pane) : QWidget(pane), m_pane(pane) {}
+    explicit Gutter(DiffPane *pane) : QWidget(pane), m_pane(pane) { setMouseTracking(true); }
     QSize sizeHint() const override { return {m_pane->gutterWidth(), 0}; }
 
 protected:
     void paintEvent(QPaintEvent *e) override { m_pane->paintGutter(e); }
+    void mouseMoveEvent(QMouseEvent *e) override { m_pane->gutterMouse(e); }
+    void mousePressEvent(QMouseEvent *e) override { m_pane->gutterMouse(e); }
 
 private:
     DiffPane *m_pane;
@@ -148,6 +150,7 @@ DiffPane::DiffPane(QWidget *parent) : QPlainTextEdit(parent)
     setFrameShape(QFrame::NoFrame);
     setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     m_gutter = new Gutter(this);
+    viewport()->setMouseTracking(true);   // for the ← beside the changed line under the pointer
     connect(this, &QPlainTextEdit::blockCountChanged, this, [this] { updateGutterWidth(); });
     connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect &r, int dy) { updateGutter(r, dy); });
     updateGutterWidth();
@@ -267,12 +270,93 @@ int DiffPane::gutterWidth() const
         maxNo = qMax(maxNo, qMax(l.number, l.number2));
     const int digits = qMax(3, int(QString::number(maxNo).size()));
     const int column = fontMetrics().horizontalAdvance(u'9') * digits;
-    return m_dual ? column * 2 + 26 : column + 18;
+    return chipWidth() + (m_dual ? column * 2 + 26 : column + 18);
+}
+
+void DiffPane::setChips(const QVector<Chip> &chips)
+{
+    const bool sameWidth = chips.size() == m_chips.size();
+    m_chips = chips;
+    m_hover = m_onChip = -1;
+    m_marked.clear();
+    if (!sameWidth) {
+        updateGutterWidth();
+        QResizeEvent re(size(), size());   // the gutter's own width follows
+        resizeEvent(&re);
+    }
+    viewport()->update();
+    m_gutter->update();
+}
+
+int DiffPane::lineAtY(int y) const
+{
+    const QTextBlock b = cursorForPosition(QPoint(0, y)).block();
+    if (!b.isValid())
+        return -1;
+    const QRectF r = blockBoundingGeometry(b).translated(contentOffset());
+    return y >= r.top() && y < r.bottom() ? b.blockNumber() : -1;
+}
+
+QVector<int> DiffPane::offered(int line) const
+{
+    QVector<int> ks;
+    for (int k = 0; line >= 0 && chipSpan && k < m_chips.size(); ++k)
+        if (!chipSpan(k, line, false).isEmpty())
+            ks << k;
+    return ks;
+}
+
+void DiffPane::hover(int line, int chip, bool block)
+{
+    const QVector<int> ks = offered(line);
+    if (ks.isEmpty())
+        line = -1;   // nothing to do here
+    if (!ks.contains(chip))
+        chip = -1;
+    const QVector<int> marked = chip >= 0 ? chipSpan(chip, line, block) : QVector<int>();
+    m_gutter->setCursor(chip >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    m_gutter->setToolTip(chip >= 0 ? m_chips.at(chip).tip + tr("\nShift-click: the whole block") : QString());
+    if (line == m_hover && chip == m_onChip && marked == m_marked)
+        return;
+    m_hover = line;
+    m_onChip = chip;
+    m_marked = marked;
+    viewport()->update();
+    m_gutter->update();
+}
+
+void DiffPane::gutterMouse(QMouseEvent *e)
+{
+    if (m_chips.isEmpty())
+        return;
+    const QPoint pos = e->position().toPoint();
+    const bool block = e->modifiers() & Qt::ShiftModifier;
+    const int chip = pos.x() < chipWidth() ? pos.x() / ChipStep : -1;
+    hover(lineAtY(pos.y()), chip, block);
+    if (e->type() == QEvent::MouseButtonPress && e->button() == Qt::LeftButton && m_onChip >= 0 && onChip) {
+        const int at = m_hover, k = m_onChip;
+        hover(-1, -1, false);
+        // After the click is done with: acting on it redraws this pane.
+        QTimer::singleShot(0, this, [this, k, at, block] {
+            if (onChip)
+                onChip(k, at, block);
+        });
+    }
+}
+
+void DiffPane::leaveEvent(QEvent *e)
+{
+    hover(-1, -1, false);
+    QPlainTextEdit::leaveEvent(e);
 }
 
 bool DiffPane::viewportEvent(QEvent *e)
 {
     // Hovering a marked line says what git would complain about.
+    if (e->type() == QEvent::MouseMove && !m_chips.isEmpty()) {
+        auto *me = static_cast<QMouseEvent *>(e);
+        hover(lineAtY(me->position().toPoint().y()), -1, false);
+    }
     if (e->type() == QEvent::ToolTip) {
         auto *he = static_cast<QHelpEvent *>(e);
         const int i = cursorForPosition(he->pos()).blockNumber();
@@ -391,6 +475,22 @@ void DiffPane::paintEvent(QPaintEvent *e)
     {
         QPainter p(viewport());
         paintGroups(p, e->rect());
+        // What the chip under the pointer would act on.
+        if (!m_marked.isEmpty()) {
+            const QPointF off = contentOffset();
+            QColor fill = m_c.frame;
+            fill.setAlphaF(0.18);
+            for (int i : m_marked) {
+                const QTextBlock b = document()->findBlockByNumber(i);
+                if (!b.isValid())
+                    continue;
+                const QRectF r = blockBoundingGeometry(b).translated(off);
+                if (r.bottom() < e->rect().top() || r.top() > e->rect().bottom())
+                    continue;
+                p.fillRect(QRectF(0, r.top(), viewport()->width(), r.height()), fill);
+                p.fillRect(QRectF(0, r.top(), 3, r.height()), m_c.frame);
+            }
+        }
     }
 
     if (m_showWs) {   // · for each space, → across each tab, in the muted colour
@@ -450,14 +550,29 @@ void DiffPane::paintGutter(QPaintEvent *e)
             p.fillRect(row, m_c.theirs);
         else if (ln.kind == Marker)
             p.fillRect(row, m_c.marker);
+        if (m_marked.contains(i))
+            p.fillRect(row, Theme::mix(m_c.gutterBg, m_c.frame, 0.30));
+        if (i == m_hover) {   // its chips, the one pointed at in the accent colour
+            p.setRenderHint(QPainter::Antialiasing);
+            for (int k : offered(i)) {
+                const QRectF chip(k * ChipStep + 3, r.top() + 1, ChipStep - 5, r.height() - 2);
+                p.setPen(Qt::NoPen);
+                p.setBrush(k == m_onChip ? m_c.frame : Theme::mix(m_c.gutterBg, m_c.fg, 0.15));
+                p.drawRoundedRect(chip, 3, 3);
+                p.setPen(k == m_onChip ? m_c.bg : m_c.fg);
+                p.drawText(chip, Qt::AlignCenter, m_chips.at(k).glyph);
+            }
+            p.setRenderHint(QPainter::Antialiasing, false);
+        }
         p.setPen(ln.kind == Same ? m_c.gutterFg : m_c.fg);
+        const int x0 = chipWidth();
         if (m_dual) {   // old | new
-            const qreal half = (w - 10) / 2.0;
+            const qreal half = (w - x0 - 10) / 2.0;
             if (ln.number > 0)
-                p.drawText(QRectF(0, r.top(), half - 4, r.height()), Qt::AlignRight | Qt::AlignVCenter,
+                p.drawText(QRectF(x0, r.top(), half - 4, r.height()), Qt::AlignRight | Qt::AlignVCenter,
                            QString::number(ln.number));
             if (ln.number2 > 0)
-                p.drawText(QRectF(half, r.top(), half, r.height()), Qt::AlignRight | Qt::AlignVCenter,
+                p.drawText(QRectF(x0 + half, r.top(), half, r.height()), Qt::AlignRight | Qt::AlignVCenter,
                            QString::number(ln.number2));
         } else if (ln.number > 0) {
             p.drawText(QRectF(0, r.top(), w - 10, r.height()), Qt::AlignRight | Qt::AlignVCenter,
@@ -689,6 +804,47 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
     for (DiffPane *pane : {m_left, m_right, m_inline})
         pane->setShowWhitespace(m_wsShow->isChecked());
 
+    // The chips beside a changed line of the right side (or of the inline
+    // view): which ones updateChips offered, and what each acts on.
+    auto rowOf = [this](DiffPane *pane, int line) { return pane == m_inline ? m_inlineToRow.value(line, -1) : line; };
+    for (DiffPane *pane : {m_right, m_inline}) {
+        pane->chipSpan = [this, pane, rowOf](int k, int line, bool block) {
+            const int row = rowOf(pane, line);
+            if (!showingRows() || row < 0 || row >= m_l.size() || !isChanged(row) || k >= m_chipActs.size())
+                return QVector<int>();
+            if (m_chipActs.at(k) == ChipAct::Revert) {
+                if (!m_editable || !onSave)
+                    return QVector<int>();
+                Selection s = blockAt(row);   // the rows, whichever side has lines
+                if (!block)
+                    s = Selection{{row}, {row}};
+                return paneLinesOf(pane, Selection{s.left + s.right, s.left + s.right});
+            }
+            if (!m_lineAction || isDirty())   // staging goes by what is saved
+                return QVector<int>();
+            return paneLinesOf(pane, block ? blockAt(row) : pickedLines(pane, line, false));
+        };
+        pane->onChip = [this, pane, rowOf](int k, int line, bool block) {
+            const int row = rowOf(pane, line);
+            if (k >= m_chipActs.size() || row < 0)
+                return;
+            if (m_chipActs.at(k) == ChipAct::LineAction) {
+                const Selection s = block ? blockAt(row) : pickedLines(pane, line, false);
+                const auto action = m_lineAction;   // it may replace itself by re-showing the file
+                if (action && !s.isEmpty() && !isDirty())
+                    action(s);
+                return;
+            }
+            // Saved straight away, so a stray debug line goes in one click (and
+            // Ctrl+Z brings it back, saved too) -- unless there were edits
+            // unsaved already, which are the user's to save.
+            const bool wasClean = !isDirty();
+            take(block ? Take::Block : Take::Line, row);
+            if (wasClean && isDirty() && onSaveRequested)
+                onSaveRequested();
+        };
+    }
+
     for (DiffPane *pane : {m_left, m_right, m_inline}) {
         pane->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(pane, &QWidget::customContextMenuRequested, this,
@@ -716,6 +872,7 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     // position instead of jumping back to the first change.
     const bool sameFile = showingRows() && title == m_name;
     const int keepScroll = activeScrollBar()->value();
+    const QStringList was = m_buffer;
 
     m_issues.clear();
     bool binary = false;
@@ -732,8 +889,12 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     m_stack->setCurrentIndex(inlineWanted() ? 2 : 0);
     updateStats();   // computed while a message may still have been showing
     m_buffer = m_original = rightLines();
-    m_undo.clear();
-    m_redo.clear();
+    // Shown again just as it was saved (the refresh after a save): the undo
+    // history still applies, so Ctrl+Z can take back what was saved.
+    if (!sameFile || m_buffer != was) {
+        m_undo.clear();
+        m_redo.clear();
+    }
     m_pending = false;
     m_rediffTimer->stop();
     setEditable(editable);
@@ -778,14 +939,57 @@ void DiffView::showMessage(const QString &title, const QString &message)
     m_imageFetch = nullptr;
     m_textDiff.clear();
     m_lineAction = nullptr;
+    m_lineGlyph.clear();
     setEditable(false);
     updateNav();
 }
 
-void DiffView::setLineActions(const QString &verb, std::function<void(const Selection &)> action)
+void DiffView::setLineActions(const QString &verb, std::function<void(const Selection &)> action,
+                              const QString &glyph)
 {
     m_lineVerb = verb;
     m_lineAction = std::move(action);
+    m_lineGlyph = m_lineAction ? glyph : QString();
+    updateChips();
+}
+
+// ← (put back) at the far left, pointing at the side it restores, then the
+// line action's own chip nearest the numbers.
+void DiffView::updateChips()
+{
+    QVector<DiffPane::Chip> chips;
+    m_chipActs.clear();
+    if (m_editable && onSave) {
+        chips << DiffPane::Chip{QStringLiteral("←"), tr("Put back the other side's version of this line")};
+        m_chipActs << ChipAct::Revert;
+    }
+    if (!m_lineGlyph.isEmpty()) {
+        chips << DiffPane::Chip{m_lineGlyph, tr("%1 this line").arg(m_lineVerb)};
+        m_chipActs << ChipAct::LineAction;
+    }
+    m_right->setChips(chips);
+    m_inline->setChips(chips);
+}
+
+// The lines of `pane` that show the picked rows' lines: the rows themselves
+// side by side; inline, each row's old line and new line separately.
+QVector<int> DiffView::paneLinesOf(DiffPane *pane, const Selection &s) const
+{
+    QVector<int> lines;
+    if (pane == m_inline) {
+        for (int i = 0; i < m_inlineToRow.size() && i < m_inline->lineCount(); ++i) {
+            const int row = m_inlineToRow.at(i);
+            const bool old = m_inline->lineAt(i).kind == DiffPane::Removed;
+            if (old ? s.left.contains(row) : s.right.contains(row))
+                lines << i;
+        }
+    } else {
+        QSet<int> rows = s.left;
+        rows.unite(s.right);
+        lines = QVector<int>(rows.begin(), rows.end());
+        std::sort(lines.begin(), lines.end());
+    }
+    return lines;
 }
 
 DiffView::Selection DiffView::blockAt(int row) const
@@ -810,12 +1014,12 @@ DiffView::Selection DiffView::blockAt(int row) const
 // The selected lines when the pointer is in the selection, else the line under
 // it. Side by side a row's old and new line go together (a changed line is the
 // pair); inline they are separate lines, picked separately.
-DiffView::Selection DiffView::pickedLines(DiffPane *pane, int paneLine) const
+DiffView::Selection DiffView::pickedLines(DiffPane *pane, int paneLine, bool withSelection) const
 {
     Selection s;
     int first = paneLine, last = paneLine;
     const QTextCursor c = pane->textCursor();
-    if (c.hasSelection()) {
+    if (withSelection && c.hasSelection()) {
         const QTextDocument *doc = pane->document();
         const int a = doc->findBlock(c.selectionStart()).blockNumber();
         QTextBlock endBlock = doc->findBlock(c.selectionEnd());
@@ -1094,6 +1298,7 @@ void DiffView::setEditable(bool editable)
     m_wantEditable = editable;
     m_editable = editable && showingRows();
     m_right->setReadOnly(!m_editable);
+    updateChips();
     updateHeader();
 }
 
@@ -1219,13 +1424,19 @@ void DiffView::take(Take how, int row)
     applyBuffer(next);
 }
 
+// With nothing unsaved beforehand, the step was one already saved (the ←
+// saves as it goes): the file on disk follows it back, rather than being left
+// behind as an unsaved edit.
 void DiffView::undo()
 {
     flushPending();
     if (m_undo.isEmpty())
         return;
+    const bool wasClean = !isDirty();
     m_redo << m_buffer;
     applyBuffer(m_undo.takeLast());
+    if (wasClean && isDirty() && onSaveRequested)
+        onSaveRequested();
 }
 
 void DiffView::redo()
@@ -1233,8 +1444,11 @@ void DiffView::redo()
     flushPending();
     if (m_redo.isEmpty())
         return;
+    const bool wasClean = !isDirty();
     m_undo << m_buffer;
     applyBuffer(m_redo.takeLast());
+    if (wasClean && isDirty() && onSaveRequested)
+        onSaveRequested();
 }
 
 bool DiffView::save()

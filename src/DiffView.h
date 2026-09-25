@@ -69,11 +69,25 @@ public:
 
     int gutterWidth() const;
     void paintGutter(QPaintEvent *e);
+    void gutterMouse(QMouseEvent *e);   // the gutter's mouse, moves and presses
+
+    // Small buttons in the gutter beside the changed line under the pointer
+    // (← put back the other side, + stage, − unstage), left to right. Each acts
+    // on that line, or with Shift its whole block. `chipSpan` gives the lines
+    // chip `k` would act on (none: not offered here), marked while the pointer
+    // is on it.
+    struct Chip {
+        QString glyph, tip;
+    };
+    void setChips(const QVector<Chip> &chips);
+    std::function<QVector<int>(int k, int line, bool block)> chipSpan;
+    std::function<void(int k, int line, bool block)> onChip;
 
 protected:
     void paintEvent(QPaintEvent *e) override;
     void resizeEvent(QResizeEvent *e) override;
     bool viewportEvent(QEvent *e) override;
+    void leaveEvent(QEvent *e) override;
 
 private:
     void updateGutterWidth();
@@ -81,6 +95,16 @@ private:
 
     void paintGroups(QPainter &p, const QRect &area);
     const Group *groupAt(int line) const;
+    int chipWidth() const { return int(m_chips.size()) * ChipStep; }
+    static constexpr int ChipStep = 18;
+    int lineAtY(int y) const;
+    QVector<int> offered(int line) const;   // the chips offered on a line
+    void hover(int line, int chip, bool block);
+
+    QVector<Chip> m_chips;
+    int m_hover = -1;         // the changed line the pointer is on, with its chips
+    int m_onChip = -1;        // the chip it is on: that chip's lines are marked
+    QVector<int> m_marked;
 
     QWidget *m_gutter;
     QVector<Line> m_lines;
@@ -169,7 +193,9 @@ public:
     // the block under the pointer, and the line under it or the selected lines
     // ("Stage block" / "Stage line"). Cleared whenever something other than a
     // diff is shown.
-    void setLineActions(const QString &verb, std::function<void(const Selection &)> action);
+    // `glyph`, when given, is also a chip in the gutter beside each changed line.
+    void setLineActions(const QString &verb, std::function<void(const Selection &)> action,
+                        const QString &glyph = QString());
     // One side with the picked lines taken over from the other, as git stages
     // lines: moving onto the left (staging), a picked new line is added and a
     // picked old line dropped; onto the right (unstaging), the reverse. Lines
@@ -249,11 +275,18 @@ private:
     QColor m_leftTint, m_rightTint;
     QTimer *m_rediffTimer;
     Selection blockAt(int row) const;
-    Selection pickedLines(DiffPane *pane, int paneLine) const;   // paneLine: the pane's own line under the pointer
+    // paneLine: the pane's own line under the pointer; with `withSelection`,
+    // the selected lines instead when it is among them.
+    Selection pickedLines(DiffPane *pane, int paneLine, bool withSelection = true) const;
+    void updateChips();
+    QVector<int> paneLinesOf(DiffPane *pane, const Selection &s) const;
 
     QVector<DiffPane::Group> m_conflictRows;
     QString m_fileName;
     QString m_lineVerb;
+    QString m_lineGlyph;
+    enum class ChipAct { Revert, LineAction };
+    QVector<ChipAct> m_chipActs;   // what each of the panes' chips does
     std::function<void(const Selection &)> m_lineAction;
 
     QString m_name;
