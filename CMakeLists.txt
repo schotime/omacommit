@@ -70,8 +70,11 @@ add_executable(og
 )
 if(WIN32)
     set_target_properties(og PROPERTIES WIN32_EXECUTABLE TRUE)
+    enable_language(RC)
+    target_sources(og PRIVATE icons/og.rc)
 endif()
-# The app icon, compiled in for the window icon (installed below for launchers).
+# The SVG is a Qt resource for the window; Windows Explorer reads the separate
+# ICO from the native executable resource rather than the Qt resource.
 qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)
 target_link_libraries(og PRIVATE Qt6::Widgets)
 # Syntax highlighting, when KDE's library is there (Arch: syntax-highlighting);

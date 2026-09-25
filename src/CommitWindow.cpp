@@ -85,6 +85,12 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setVisible(!m_agents.isEmpty());
+    // The selected agent and the running state change the button text. Keep
+    // its width stable so starting/stopping a writer cannot resize the split.
+    int writeWidth = m_writeBtn->fontMetrics().horizontalAdvance(tr("■ Stop"));
+    for (const Agent &agent : m_agents)
+        writeWidth = qMax(writeWidth, m_writeBtn->fontMetrics().horizontalAdvance(tr("✨ Write · %1").arg(agent.name)));
+    m_writeBtn->setMinimumWidth(writeWidth + 24);   // tool-button padding and border
     if (m_agents.size() > 1) {
         auto *menu = new QMenu(m_writeBtn);
         for (const Agent &a : m_agents) {
@@ -147,6 +153,9 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
 
     m_status = new QLabel;
     m_status->setObjectName(QStringLiteral("muted"));
+    // Progress/completion messages vary in length; they must not increase the
+    // left pane's minimum width while an agent is writing.
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_pushBtn = new QPushButton(tr("Commit && Push"));
     m_pushBtn->setToolTip(tr("Ctrl+Shift+Enter"));
     m_commitBtn = new QPushButton(tr("Commit"));
