@@ -31,9 +31,25 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <functional>
+
 namespace {
 
 constexpr int PathRole = Qt::UserRole + 1;
+
+// Tells its owner when it is resized, so the row can fold its buttons away.
+class ResizeWatcher : public QWidget {
+public:
+    std::function<void()> onResize;
+
+protected:
+    void resizeEvent(QResizeEvent *e) override
+    {
+        QWidget::resizeEvent(e);
+        if (onResize)
+            onResize();
+    }
+};
 
 QLabel *sectionLabel(const QString &text)
 {
@@ -201,6 +217,12 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     m_useCur->setToolTip(tr("Replace this conflict with the %1 side (%2)").arg(m_curShort, m_curLong));
     m_useIncCur->setToolTip(tr("Keep both: %1's lines, then %2's").arg(m_incShort, m_curShort));
     m_useCurInc->setToolTip(tr("Keep both: %1's lines, then %2's").arg(m_curShort, m_incShort));
+    m_pickBtn = new QToolButton;
+    m_pickBtn->setText(tr("Resolve ▾"));
+    m_pickBtn->setToolTip(tr("Pick how to resolve this conflict, or the whole file"));
+    m_pickBtn->setPopupMode(QToolButton::InstantPopup);
+    m_pickBtn->setMenu(new QMenu(m_pickBtn));   // filled below, in the buttons' order
+    m_pickBtn->hide();
     m_wholeBtn = new QToolButton;
     m_wholeBtn->setText(tr("Whole file ▾"));
     m_wholeBtn->setPopupMode(QToolButton::InstantPopup);
@@ -234,7 +256,11 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     // The pick buttons wrap onto a second row when the pane is narrow, rather
     // than setting its minimum width -- one long row held the window's divider
     // in place. Save and Mark resolved stay together on the right.
-    auto *picks = new QWidget;
+    // When even one row of them won't fit, the four picks and Whole file
+    // fold into one dropdown.
+    auto *picks = new ResizeWatcher;
+    picks->onResize = [this] { fitPicks(); };
+    m_picks = picks;
     auto *pickFlow = new FlowLayout(picks);
     m_pickFor = new QLabel;   // which conflict the buttons act on
     m_pickFor->setObjectName(QStringLiteral("section"));
@@ -250,6 +276,17 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
         pickFlow->addWidget(m_useIncCur);
         pickFlow->addWidget(m_useCurInc);
     }
+    for (int i = 1; i <= 4; ++i) {
+        auto *b = static_cast<QPushButton *>(pickFlow->itemAt(i)->widget());
+        QAction *a = m_pickBtn->menu()->addAction(b->text(), b, &QPushButton::click);
+        a->setToolTip(b->toolTip());
+        connect(m_pickBtn->menu(), &QMenu::aboutToShow, a, [a, b] { a->setEnabled(b->isEnabled()); });
+    }
+    // and the whole-file choices after them, since Whole file folds in too
+    m_pickBtn->menu()->addSeparator();
+    m_pickBtn->menu()->addActions(m_wholeBtn->menu()->actions());
+    m_pickBtn->menu()->setToolTipsVisible(true);
+    pickFlow->addWidget(m_pickBtn);
     pickFlow->addWidget(m_wholeBtn);
     QSizePolicy sp(QSizePolicy::Expanding, QSizePolicy::Preferred);
     sp.setHeightForWidth(true);
@@ -1073,9 +1110,30 @@ void ResolveWindow::updateActions()
     for (QWidget *w : {static_cast<QWidget *>(m_useInc), static_cast<QWidget *>(m_useCur),
                        static_cast<QWidget *>(m_useIncCur), static_cast<QWidget *>(m_useCurInc)})
         w->setEnabled(text && n > 0);
+    fitPicks();
     m_prevBtn->setEnabled(text && n > 0);
     m_nextBtn->setEnabled(text && n > 0);
     m_saveBtn->setEnabled(dirty);
+}
+
+void ResolveWindow::fitPicks()
+{
+    // Measured unfolded whatever is showing now, so it never flips back and forth.
+    const int gap = m_picks->layout()->spacing();
+    int need = m_wholeBtn->sizeHint().width();
+    for (QWidget *w : {static_cast<QWidget *>(m_useInc), static_cast<QWidget *>(m_useCur),
+                       static_cast<QWidget *>(m_useIncCur), static_cast<QWidget *>(m_useCurInc)})
+        need += w->sizeHint().width() + gap;
+    if (!m_pickFor->isHidden())
+        need += m_pickFor->sizeHint().width() + gap;
+    const bool fold = need > m_picks->width();
+    if (fold == !m_pickBtn->isHidden())
+        return;
+    for (QWidget *w : {static_cast<QWidget *>(m_useInc), static_cast<QWidget *>(m_useCur),
+                       static_cast<QWidget *>(m_useIncCur), static_cast<QWidget *>(m_useCurInc)})
+        w->setVisible(!fold);
+    m_wholeBtn->setVisible(!fold);
+    m_pickBtn->setVisible(fold);
 }
 
 void ResolveWindow::applyTheme()

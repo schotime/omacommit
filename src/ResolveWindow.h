@@ -74,6 +74,7 @@ private:
     static QString bothState(bool hasBase, int left);
     void selectNextUnresolved();
     void updateActions();
+    void fitPicks();   // the pick buttons fold into one dropdown when their row is too narrow
     void applyTheme();
 
     GitRepo m_repo;
@@ -105,7 +106,9 @@ private:
     QPushButton *m_useCur;
     QPushButton *m_useIncCur;
     QPushButton *m_useCurInc;
+    QToolButton *m_pickBtn;   // the four picks and Whole file as one menu, shown in their place when folded
     QToolButton *m_wholeBtn;
+    QWidget *m_picks;
     QPushButton *m_saveBtn;
     QPushButton *m_resolvedBtn;
     QLabel *m_wholeText;
