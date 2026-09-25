@@ -408,8 +408,9 @@ void LogWindow::reload()
         m_diff->showMessage({}, tr("No commits yet"));
         return;
     }
-    // Stay on the commit that was showing if it is still in the list.
-    QTreeWidgetItem *select = m_commits->topLevelItem(0);
+    // Stay on the commit that was showing if it is still in the list; the
+    // first time, the newest commit -- not the working changes row above it.
+    QTreeWidgetItem *select = m_commits->topLevelItem(m_working && m_commits->topLevelItemCount() > 1 ? 1 : 0);
     for (int i = 0; i < m_log.size() && !keep.isEmpty(); ++i)
         if (m_log.at(i).hash == keep) {
             select = m_commits->topLevelItem(i);
