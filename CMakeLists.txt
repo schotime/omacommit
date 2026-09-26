@@ -77,9 +77,18 @@ endif()
 # ICO from the native executable resource rather than the Qt resource.
 qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)
 target_link_libraries(og PRIVATE Qt6::Widgets)
-# Syntax highlighting, when KDE's library is there (Arch: syntax-highlighting);
-# without it code is shown as plain text.
+# Syntax highlighting is optional on Linux, but required for the Windows
+# standalone build so a missing static library cannot silently ship plain text.
 find_package(KF6SyntaxHighlighting QUIET)
+if(OG_STANDALONE AND NOT KF6SyntaxHighlighting_FOUND)
+    message(FATAL_ERROR "OG_STANDALONE needs static KF6SyntaxHighlighting; see the Windows build instructions")
+endif()
+if(OG_STANDALONE AND KF6SyntaxHighlighting_FOUND)
+    get_target_property(_og_syntax_type KF6::SyntaxHighlighting TYPE)
+    if(NOT _og_syntax_type STREQUAL "STATIC_LIBRARY")
+        message(FATAL_ERROR "OG_STANDALONE requires a static KF6SyntaxHighlighting build")
+    endif()
+endif()
 if(KF6SyntaxHighlighting_FOUND)
     target_link_libraries(og PRIVATE KF6::SyntaxHighlighting)
     target_compile_definitions(og PRIVATE OG_SYNTAX)
@@ -87,12 +96,20 @@ if(KF6SyntaxHighlighting_FOUND)
 else()
     message(STATUS "Syntax highlighting: off (install KF6SyntaxHighlighting to turn it on)")
 endif()
+if(OG_STANDALONE)
+    # Syntax highlighting only uses the parser, not KDE's definition downloader.
+    # Keep the Qt Network archive for the rest of Qt, but omit its optional TLS
+    # plugins (and their OpenSSL DLL dependencies) from this single-file build.
+    qt_import_plugins(og EXCLUDE_BY_TYPE tls)
+endif()
 # MSYS2's static Qt brings in image plugins and codecs with circular static
 # dependencies. Group the archives and force the static libb2 before any Qt
 # import library can pull in its DLL version.
 if(OG_STANDALONE)
     target_link_options(og PRIVATE -static -static-libgcc -static-libstdc++
-        -Wl,--whole-archive "${_og_static_lib_dir}/libb2.a" -Wl,--no-whole-archive
+        -Wl,--whole-archive "${_og_static_lib_dir}/libb2.a"
+        "${_og_static_lib_dir}/libbrotlidec.a" "${_og_static_lib_dir}/libbrotlicommon.a"
+        -Wl,--no-whole-archive
         -Wl,--start-group)
     target_link_libraries(og PRIVATE
         "${_og_static_lib_dir}/libfreetype.a"

@@ -53,16 +53,16 @@ pacman -Syu
 # If MSYS2 asks you to close the shell, reopen UCRT64 and run pacman -Syu again.
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-static \
-  mingw-w64-ucrt-x86_64-libwebp
+  mingw-w64-ucrt-x86_64-libwebp mingw-w64-ucrt-x86_64-extra-cmake-modules \
+  perl git mingw-w64-ucrt-x86_64-python
 cd /d/path/to/omacommit
-cmake -S . -B build-standalone -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static -DOG_STANDALONE=ON
-cmake --build build-standalone -j 4
+./scripts/build-windows.sh
 ./build-standalone/og.exe --version
 ```
 
 Copy `build-standalone/og.exe` anywhere and launch it directly (including by
-double-click). It links Qt, its plugins, codecs and the compiler runtime into
+double-click). It links Qt, KDE's syntax-highlighting library and its language
+definitions, Qt plugins, codecs and the compiler runtime into
 the executable; Windows system DLLs are still used. **Git for Windows must be
 installed and on PATH** for repository operations: og invokes the real `git`
 binary so Git hooks, signing and credential helpers work. The Omarchy theme

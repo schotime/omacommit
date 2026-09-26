@@ -35,8 +35,9 @@ protected:
 private:
     void reload();
     void loadMore();
+    void appendCommits(const QVector<LogCommit> &batch);
     void showCommit();
-    void showWorkingChanges();
+    void loadSelection(const QString &details, const QString &emptyMessage, const QString &hash = QString());
     void showComparison(const QList<QTreeWidgetItem *> &selected);
     void listCommitFiles();
     void showFileDiff();
@@ -85,4 +86,7 @@ private:
     bool m_fitting = false;
     bool m_exhausted = false;
     bool m_loading = false;
+    int m_reloadRequest = 0;
+    int m_selectionRequest = 0;
+    int m_diffRequest = 0;
 };

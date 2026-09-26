@@ -20,6 +20,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
+#include <QPointer>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -27,6 +28,7 @@
 #include <QStackedWidget>
 #include <QStringDecoder>
 #include <QTextBlock>
+#include <QThreadPool>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -194,8 +196,23 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     // changes how it is drawn, so edits in it are never reset.
     m_top->onOptionsChanged = [this] {
         m_merged->setShowWhitespace(m_top->showWhitespace());
-        if (m_stack->currentIndex() == 0)
-            showSides();
+        if (m_stack->currentIndex() != 0)
+            return;
+        const int request = m_openRequest;
+        const QString path = m_path;
+        const GitRepo repo = m_repo;
+        const QString left = m_mineIsIncoming ? m_curPath : m_incPath;
+        const QString right = m_mineIsIncoming ? m_incPath : m_curPath;
+        QPointer<ResolveWindow> self(this);
+        QThreadPool::globalInstance()->start([self, repo, request, path, left, right] {
+            const QByteArray diff = repo.diffFiles(left, right);
+            QMetaObject::invokeMethod(qApp, [self, request, path, diff] {
+                if (!self || request != self->m_openRequest || path != self->m_path)
+                    return;
+                self->m_sidesDiff = diff;
+                self->showSides();
+            }, Qt::QueuedConnection);
+        });
     };
 
     m_mergedTitle = new QLabel;
@@ -473,7 +490,31 @@ void ResolveWindow::describeSides()
 
 void ResolveWindow::refreshList(const QString &select)
 {
-    const QVector<UnmergedFile> unmerged = m_repo.unmerged();
+    const int request = ++m_listRequest;
+    ++m_openRequest;   // invalidate a file load started before this index refresh
+    const GitRepo repo = m_repo;
+    QPointer<ResolveWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, select, request] {
+        const QVector<UnmergedFile> unmerged = repo.unmerged();
+        QHash<QString, int> counts;
+        for (const UnmergedFile &u : unmerged) {
+            if (!u.has(2) || !u.has(3))
+                continue;
+            QFile f(QDir(repo.root()).filePath(u.path));
+            const QByteArray data = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            counts.insert(u.path, isText(data) && !data.isEmpty() ? countConflicts(data) : -1);
+        }
+        QMetaObject::invokeMethod(qApp, [self, select, request, unmerged, counts] {
+            if (!self || request != self->m_listRequest)
+                return;
+            self->displayList(unmerged, counts, select);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void ResolveWindow::displayList(const QVector<UnmergedFile> &unmerged, const QHash<QString, int> &counts,
+                                const QString &select)
+{
     QSet<QString> open;
     for (const UnmergedFile &u : unmerged) {
         open.insert(u.path);
@@ -505,9 +546,7 @@ void ResolveWindow::refreshList(const QString &select)
                 if (u.has(2) && u.has(3)) {
                     // A count only for text: a binary file has no markers to
                     // count, and "none left" would wrongly read as done.
-                    QFile f(QDir(m_repo.root()).filePath(p));
-                    const QByteArray data = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
-                    state = bothState(u.has(1), isText(data) && !data.isEmpty() ? countConflicts(data) : -1);
+                    state = bothState(u.has(1), counts.value(p, -1));
                 } else if (u.has(2)) {
                     state = u.has(1) ? tr("Deleted in %1").arg(m_incShort) : tr("Added in %1 only").arg(m_curShort);
                 } else if (u.has(3)) {
@@ -535,9 +574,11 @@ void ResolveWindow::refreshList(const QString &select)
                 toSelect = m_files->topLevelItem(i);
     if (!toSelect && m_files->topLevelItemCount() > 0)
         toSelect = m_files->topLevelItem(0);
-    if (toSelect)
+    if (toSelect) {
+        QSignalBlocker block(m_files);
         m_files->setCurrentItem(toSelect);
-    openSelected();
+    }
+    openSelected();   // a refresh can reselect the same row without emitting a signal
 }
 
 QString ResolveWindow::bothState(bool hasBase, int left)
@@ -622,8 +663,18 @@ void ResolveWindow::openSelected()
         return;
     }
 
+    // The previous file can no longer be edited while a new one is loading.
+    // Clear its document so a cancelled/late load cannot expose stale edits.
+    if (path != m_path) {
+        QSignalBlocker block(m_merged);
+        m_merged->clear();
+        m_merged->document()->setModified(false);
+    }
+
+    const int request = ++m_openRequest;
     m_path = path;
     m_conflicts.clear();
+    m_stack->setCurrentIndex(2);   // no old editor actions while loading a new file
     if (path.isEmpty()) {
         m_message->setText(m_operation.isEmpty() ? tr("There are no conflicts to resolve.")
                                                  : tr("There are no conflicted files."));
@@ -632,35 +683,62 @@ void ResolveWindow::openSelected()
         m_message->setText(tr("%1 is resolved and staged.").arg(path));
         m_stack->setCurrentIndex(2);
     } else {
-        const QVector<UnmergedFile> unmerged = m_repo.unmerged();
-        const auto u = std::find_if(unmerged.begin(), unmerged.end(), [&](const UnmergedFile &x) { return x.path == path; });
-        if (u == unmerged.end()) {
-            m_resolved.insert(path);
-            refreshList(path);
-            return;
-        }
-        if (u->has(2) && u->has(3))
-            openText(*u);
-        else
-            openWholeFile(*u);
+        m_message->setText(tr("Loading %1…").arg(path));
+        m_stack->setCurrentIndex(2);
+        const GitRepo repo = m_repo;
+        QPointer<ResolveWindow> self(this);
+        QThreadPool::globalInstance()->start([self, repo, path, request] {
+            const QVector<UnmergedFile> unmerged = repo.unmerged();
+            const auto found = std::find_if(unmerged.begin(), unmerged.end(), [&](const UnmergedFile &u) { return u.path == path; });
+            const bool exists = found != unmerged.end();
+            const UnmergedFile u = exists ? *found : UnmergedFile{};
+            auto blob = [&repo](const QString &sha) {
+                return sha.isEmpty() ? QByteArray() : repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), sha}).out;
+            };
+            const QByteArray cur = exists ? blob(u.stage[2]) : QByteArray();
+            const QByteArray inc = exists ? blob(u.stage[3]) : QByteArray();
+            QByteArray merged, sideDiff;
+            bool mergedOk = false;
+            if (exists && u.has(2) && u.has(3)) {
+                QFile f(QDir(repo.root()).filePath(path));
+                mergedOk = f.open(QIODevice::ReadOnly);
+                if (mergedOk)
+                    merged = f.readAll();
+                if (isText(cur) && isText(inc) && mergedOk && isEditableText(merged)) {
+                    QTemporaryDir tmp;
+                    const QString left = tmp.filePath(QStringLiteral("incoming"));
+                    const QString right = tmp.filePath(QStringLiteral("current"));
+                    QFile a(left), b(right);
+                    if (a.open(QIODevice::WriteOnly) && b.open(QIODevice::WriteOnly)) {
+                        a.write(inc);
+                        b.write(cur);
+                        a.close();
+                        b.close();
+                        sideDiff = repo.diffFiles(left, right);
+                    }
+                }
+            }
+            QMetaObject::invokeMethod(qApp, [self, request, path, exists, u, cur, inc, merged, mergedOk, sideDiff] {
+                if (!self || request != self->m_openRequest || path != self->m_path)
+                    return;
+                if (!exists) {
+                    self->m_resolved.insert(path);
+                    self->refreshList(path);
+                } else if (u.has(2) && u.has(3) && isText(cur) && isText(inc) && mergedOk && isEditableText(merged)) {
+                    self->openText(u, cur, inc, merged, sideDiff);
+                } else {
+                    self->openWholeFile(u, cur, inc);
+                }
+                self->updateActions();
+            }, Qt::QueuedConnection);
+        });
     }
     updateActions();
 }
 
-void ResolveWindow::openText(const UnmergedFile &u)
+void ResolveWindow::openText(const UnmergedFile &u, const QByteArray &cur, const QByteArray &inc,
+                             const QByteArray &merged, const QByteArray &sideDiff)
 {
-    auto blob = [this](const QString &sha) {
-        return m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), sha}).out;
-    };
-    const QByteArray cur = blob(u.stage[2]);
-    const QByteArray inc = blob(u.stage[3]);
-    QFile f(QDir(m_repo.root()).filePath(u.path));
-    const QByteArray merged = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
-    if (!isText(cur) || !isText(inc) || !f.exists() || !isEditableText(merged)) {
-        openWholeFile(u);
-        return;
-    }
-
     // The two sides, aligned against each other: incoming left, current right.
     if (!m_tmp)
         m_tmp = std::make_unique<QTemporaryDir>();
@@ -674,6 +752,7 @@ void ResolveWindow::openText(const UnmergedFile &u)
     m_incLines = DiffView::linesOf(inc);
     m_curLines = DiffView::linesOf(cur);
     m_openHasBase = u.has(1);
+    m_sidesDiff = sideDiff;
     showSides();
 
     // The merged file starts as git left it -- markers and all, or whatever
@@ -715,11 +794,11 @@ void ResolveWindow::showSides()
         m_top->setPaneCaptions(m_curLong, m_incLong);
     else
         m_top->setPaneCaptions(m_incLong, m_curLong);
-    m_top->showDiff(m_path, m_repo.diffFiles(left, right), false, images);
+    m_top->showDiff(m_path, m_sidesDiff, false, images);
     placeOriginals();
 }
 
-void ResolveWindow::openWholeFile(const UnmergedFile &u)
+void ResolveWindow::openWholeFile(const UnmergedFile &u, const QByteArray &cur, const QByteArray &inc)
 {
     m_originals.clear();
     m_originalOf.clear();
@@ -745,14 +824,9 @@ void ResolveWindow::openWholeFile(const UnmergedFile &u)
 
     // An image: show both sides to choose between, yours on the right.
     {
-        auto side = [this, &u](int stage, const QString &caption) {
-            const QByteArray data = u.has(stage)
-                ? m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), u.stage[stage]}).out
-                : QByteArray();
-            return ImageCompare::load(caption, data, u.has(stage));
-        };
-        const ImageCompare::Side inc = side(3, m_incLong), cur = side(2, m_curLong);
-        m_wholeImages->setSides(m_mineIsIncoming ? cur : inc, m_mineIsIncoming ? inc : cur);
+        const ImageCompare::Side incSide = ImageCompare::load(m_incLong, inc, u.has(3));
+        const ImageCompare::Side curSide = ImageCompare::load(m_curLong, cur, u.has(2));
+        m_wholeImages->setSides(m_mineIsIncoming ? curSide : incSide, m_mineIsIncoming ? incSide : curSide);
         m_wholeImages->setVisible(m_wholeImages->hasImage());
     }
 

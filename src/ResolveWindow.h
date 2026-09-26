@@ -2,6 +2,7 @@
 
 #include "GitRepo.h"
 
+#include <QHash>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QWidget>
@@ -42,9 +43,12 @@ private:
 
     void describeSides();
     void refreshList(const QString &select = QString());
+    void displayList(const QVector<UnmergedFile> &unmerged, const QHash<QString, int> &counts,
+                     const QString &select);
     void openSelected();
-    void openText(const UnmergedFile &u);
-    void openWholeFile(const UnmergedFile &u);
+    void openText(const UnmergedFile &u, const QByteArray &cur, const QByteArray &inc,
+                  const QByteArray &merged, const QByteArray &sideDiff);
+    void openWholeFile(const UnmergedFile &u, const QByteArray &cur, const QByteArray &inc);
     void showSides();
     bool resolveUnsaved(bool allowCancel = true);
 
@@ -118,6 +122,9 @@ private:
     QLabel *m_message;
 
     QString m_path;              // the file open on the right
+    int m_openRequest = 0;       // ignore results for a previously selected file
+    int m_listRequest = 0;       // ignore list refreshes from an earlier operation
+    QByteArray m_sidesDiff;      // diff computed while loading the selected file
     QByteArray m_loaded;         // its bytes as opened, to spot outside changes
     QStringList m_curLines, m_incLines;
     bool m_openHasBase = true;   // the open file has a common ancestor (both modified, not both added)

@@ -22,6 +22,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QScrollBar>
 #include <QCloseEvent>
 #include <QDir>
@@ -32,6 +33,8 @@
 #include <QSplitter>
 #include <QStyledItemDelegate>
 #include <QTreeWidget>
+#include <QThreadPool>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -365,59 +368,98 @@ void LogWindow::showEvent(QShowEvent *e)
 
 void LogWindow::reload()
 {
-    const QString branch = m_repo.branch();
-    m_header->setText(m_allBranches->isChecked() ? tr("all branches")
-                      : branch.isEmpty()         ? tr("of <i>detached HEAD</i>")
-                                                 : tr("of %1").arg(Theme::strong(branch)));
-    m_tabs->setConflicts(!m_repo.unmerged().isEmpty());
-
+    const int request = ++m_reloadRequest;
+    ++m_selectionRequest;
+    ++m_diffRequest;
     const QString keep = m_shownCommit;
-    m_refs = m_repo.refsByCommit();
+    const QStringList selectedHashes = [this] {
+        QStringList hashes;
+        for (QTreeWidgetItem *item : m_commits->selectedItems())
+            hashes << m_log.value(item->data(0, RowRole).toInt()).hash;
+        return hashes;
+    }();
+    const bool allBranches = m_allBranches->isChecked();
     m_log.clear();
     m_graph.clear();
     m_layout.reset();
     m_exhausted = false;
     m_shownCommit.clear();
+    m_span = {};
+    m_commitFiles.clear();
+    m_loading = true;
     {
         QSignalBlocker block(m_commits);
         m_commits->clear();
     }
-    // Anything not committed yet gets a row of its own above HEAD, joined to it.
-    m_working = false;
-    const QString head = QString::fromUtf8(
-        m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"), QStringLiteral("HEAD")}).out).trimmed();
-    if (!head.isEmpty() && !m_repo.status().isEmpty()) {
-        LogCommit w;
-        w.hash = WorkingHash;
-        w.parents = {head};
-        w.subject = tr("Working changes");
-        m_log.push_back(w);
-        m_graph.push_back(m_layout.add(w.hash, w.parents));
-        auto *it = new QTreeWidgetItem;
-        it->setData(0, RowRole, 0);
-        it->setToolTip(0, tr("Changes not committed yet. Double-click to commit them."));
-        m_commits->addTopLevelItem(it);
-        m_working = true;
-    }
-    loadMore();
-
-    if (m_log.isEmpty()) {
-        m_details->setPlainText(tr("No commits yet."));
-        m_files->clear();
-        m_fileCount->clear();
-        m_diff->showMessage({}, tr("No commits yet"));
-        return;
-    }
-    // Stay on the commit that was showing if it is still in the list; the
-    // first time, the newest commit -- not the working changes row above it.
-    QTreeWidgetItem *select = m_commits->topLevelItem(m_working && m_commits->topLevelItemCount() > 1 ? 1 : 0);
-    for (int i = 0; i < m_log.size() && !keep.isEmpty(); ++i)
-        if (m_log.at(i).hash == keep) {
-            select = m_commits->topLevelItem(i);
-            break;
-        }
-    m_commits->setCurrentItem(select);
-    m_commits->scrollToItem(select);
+    { QSignalBlocker block(m_files); m_files->clear(); }
+    m_fileCount->clear();
+    m_details->setPlainText(tr("Loading history…"));
+    m_diff->showMessage({}, tr("Loading history…"));
+    const GitRepo repo = m_repo;
+    QPointer<LogWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, request, keep, selectedHashes, allBranches] {
+        const QString branch = repo.branch();
+        const bool conflicts = !repo.unmerged().isEmpty();
+        const auto refs = repo.refsByCommit();
+        const QString head = QString::fromUtf8(repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                                                        QStringLiteral("--quiet"), QStringLiteral("HEAD")}).out).trimmed();
+        const bool working = !head.isEmpty() && !repo.status().isEmpty();
+        const auto batch = repo.log(0, BatchSize, allBranches);
+        QMetaObject::invokeMethod(qApp, [self, request, keep, selectedHashes, allBranches, branch, conflicts, refs, head, working, batch] {
+            if (!self || request != self->m_reloadRequest)
+                return;
+            LogWindow *w = self;
+            w->m_header->setText(allBranches ? tr("all branches")
+                                  : branch.isEmpty() ? tr("of <i>detached HEAD</i>")
+                                                     : tr("of %1").arg(Theme::strong(branch)));
+            w->m_tabs->setConflicts(conflicts);
+            w->m_refs = refs;
+            w->m_working = false;
+            QSignalBlocker block(w->m_commits);   // don't select the working row while history is still arriving
+            if (working) {
+                LogCommit row;
+                row.hash = WorkingHash;
+                row.parents = {head};
+                row.subject = tr("Working changes");
+                w->m_log.push_back(row);
+                w->m_graph.push_back(w->m_layout.add(row.hash, row.parents));
+                auto *it = new QTreeWidgetItem;
+                it->setData(0, RowRole, 0);
+                it->setToolTip(0, tr("Changes not committed yet. Double-click to commit them."));
+                w->m_commits->addTopLevelItem(it);
+                w->m_working = true;
+            }
+            w->appendCommits(batch);
+            w->m_exhausted = batch.size() < BatchSize;
+            w->m_loading = false;
+            if (w->m_log.isEmpty()) {
+                w->m_details->setPlainText(tr("No commits yet."));
+                w->m_fileCount->clear();
+                w->m_diff->showMessage({}, tr("No commits yet"));
+                return;
+            }
+            // Open the newest commit, not the working changes row above it.
+            QTreeWidgetItem *select = w->m_commits->topLevelItem(w->m_working && w->m_commits->topLevelItemCount() > 1 ? 1 : 0);
+            for (int i = 0; i < w->m_log.size() && !keep.isEmpty(); ++i)
+                if (w->m_log.at(i).hash == keep) {
+                    select = w->m_commits->topLevelItem(i);
+                    break;
+                }
+            if (selectedHashes.size() > 1) {
+                for (int i = 0; i < w->m_log.size(); ++i)
+                    if (selectedHashes.contains(w->m_log.at(i).hash))
+                        w->m_commits->topLevelItem(i)->setSelected(true);
+                select = w->m_commits->selectedItems().value(0, select);
+                w->m_commits->setCurrentItem(select);
+            } else {
+                w->m_commits->setCurrentItem(select);
+            }
+            w->m_commits->scrollToItem(select);
+            w->showCommit();
+            if (!w->m_exhausted && w->m_commits->verticalScrollBar()->maximum() == 0)
+                QTimer::singleShot(0, w, [self] { if (self) self->loadMore(); });
+        }, Qt::QueuedConnection);
+    });
 }
 
 void LogWindow::loadMore()
@@ -426,10 +468,26 @@ void LogWindow::loadMore()
         return;
     m_loading = true;
     const int loaded = int(m_log.size()) - (m_working ? 1 : 0);   // the working row isn't history
-    const QVector<LogCommit> batch = m_repo.log(loaded, BatchSize, m_allBranches->isChecked());
-    if (batch.size() < BatchSize)
-        m_exhausted = true;
+    const int request = m_reloadRequest;
+    const bool allBranches = m_allBranches->isChecked();
+    const GitRepo repo = m_repo;
+    QPointer<LogWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, request, loaded, allBranches] {
+        const QVector<LogCommit> batch = repo.log(loaded, BatchSize, allBranches);
+        QMetaObject::invokeMethod(qApp, [self, request, batch] {
+            if (!self || request != self->m_reloadRequest)
+                return;
+            self->appendCommits(batch);
+            self->m_exhausted = batch.size() < BatchSize;
+            self->m_loading = false;
+            if (!self->m_exhausted && self->m_commits->verticalScrollBar()->maximum() == 0)
+                QTimer::singleShot(0, self, [self] { if (self) self->loadMore(); });
+        }, Qt::QueuedConnection);
+    });
+}
 
+void LogWindow::appendCommits(const QVector<LogCommit> &batch)
+{
     QList<QTreeWidgetItem *> items;
     items.reserve(batch.size());
     for (const LogCommit &c : batch) {
@@ -450,7 +508,6 @@ void LogWindow::loadMore()
         items << it;
     }
     m_commits->addTopLevelItems(items);
-    m_loading = false;
 }
 
 // A commit is shown against its first parent, as TortoiseGit does for merges;
@@ -470,34 +527,28 @@ void LogWindow::showCommit()
     auto *it = selected.isEmpty() ? m_commits->currentItem() : selected.constFirst();
     if (!it)
         return;
-    const LogCommit &c = m_log.at(it->data(0, RowRole).toInt());
+    const LogCommit c = m_log.at(it->data(0, RowRole).toInt());
     if (c.hash == m_shownCommit)
         return;
     m_shownCommit = c.hash;
     m_span = c.hash == WorkingHash ? Span{QStringLiteral("HEAD"), QString(), true}
-                                   : Span{baseOf(c), c.hash, false};
+                                   : Span{c.parents.isEmpty() ? QString() : c.parents.constFirst(), c.hash, false};
     if (c.hash == WorkingHash) {
-        showWorkingChanges();
+        loadSelection({}, tr("No changes against HEAD"));
         return;
     }
 
     QStringList parents;
     for (const QString &p : c.parents)
         parents << p.left(8);
-    QString details = m_repo.commitMessage(c.hash);
-    details += QStringLiteral("\n\n") + tr("Commit   %1").arg(c.hash);
+    QString details = tr("Commit   %1").arg(c.hash);
     details += QStringLiteral("\n") + tr("Author   %1 <%2>").arg(c.author, c.email);
     details += QStringLiteral("\n") + tr("Date     %1")
                                           .arg(QDateTime::fromSecsSinceEpoch(c.time).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
     if (!parents.isEmpty())
         details += QStringLiteral("\n") + tr("Parents  %1").arg(parents.join(QStringLiteral(", ")));
-    m_details->setPlainText(details);
-
-    m_commitFiles = m_repo.changedFiles(baseOf(c), c.hash);
-    listCommitFiles();
-    if (m_files->topLevelItemCount() == 0)
-        m_diff->showMessage({}, c.parents.size() > 1 ? tr("Merge with no changes against its first parent")
-                                                     : tr("No file changes"));
+    loadSelection(details, c.parents.size() > 1 ? tr("Merge with no changes against its first parent")
+                                                     : tr("No file changes"), c.hash);
 }
 
 // Several commits selected. A run of them next to each other is shown as what
@@ -517,7 +568,7 @@ void LogWindow::showComparison(const QList<QTreeWidgetItem *> &selected)
     const LogCommit &oldest = m_log.at(rows.constLast());
     Span span;
     span.working = newest.hash == WorkingHash;
-    span.from = together ? baseOf(oldest) : oldest.hash;
+    span.from = together ? (oldest.parents.isEmpty() ? QString() : oldest.parents.constFirst()) : oldest.hash;
     span.to = span.working ? QString() : newest.hash;
     const QString key = span.from + QStringLiteral("..") + (span.working ? QStringLiteral("working") : span.to);
     if (key == m_shownCommit)
@@ -541,42 +592,54 @@ void LogWindow::showComparison(const QList<QTreeWidgetItem *> &selected)
         const LogCommit &c = m_log.at(r);
         details += QStringLiteral("\n") + (c.hash == WorkingHash ? tr("          Working changes") : c.hash.left(8) + QStringLiteral("  ") + c.subject);
     }
-    m_details->setPlainText(details);
-    m_commitFiles = span.working ? m_repo.workingChanges(span.from) : m_repo.changedFiles(span.from, span.to);
-    listCommitFiles();
-    if (m_files->topLevelItemCount() == 0)
-        m_diff->showMessage({}, tr("No differences"));
+    loadSelection(details, tr("No differences"));
 }
 
-// Everything not committed yet, against HEAD: staged and unstaged alike, and
-// untracked files.
-void LogWindow::showWorkingChanges()
+void LogWindow::loadSelection(const QString &details, const QString &emptyMessage, const QString &hash)
 {
-    m_commitFiles = m_repo.workingChanges(QStringLiteral("HEAD"));
-    int staged = 0, unstaged = 0, untracked = 0;
-    for (const FileEntry &e : m_repo.status()) {
-        if (e.untracked()) {
-            ++untracked;
-            continue;
-        }
-        if (e.index != u' ')
-            ++staged;
-        if (e.worktree != u' ')
-            ++unstaged;
-    }
-    QStringList counts;
-    if (staged)
-        counts << tr("%1 staged").arg(staged);
-    if (unstaged)
-        counts << tr("%1 not staged").arg(unstaged);
-    if (untracked)
-        counts << tr("%1 untracked").arg(untracked);
-    m_details->setPlainText(tr("Working changes, not committed yet: %1.\n\n"
-                               "Shown against HEAD. Double-click the row, or right-click → Commit…, "
-                               "to commit them.").arg(counts.join(QStringLiteral(", "))));
-    listCommitFiles();
-    if (m_files->topLevelItemCount() == 0)
-        m_diff->showMessage({}, tr("No changes against HEAD"));
+    const int request = ++m_selectionRequest;
+    ++m_diffRequest;
+    const Span span = m_span;
+    m_commitFiles.clear();
+    m_files->clear();
+    m_fileCount->clear();
+    m_details->setPlainText(tr("Loading changes…"));
+    m_diff->showMessage({}, tr("Loading changes…"));
+    const GitRepo repo = m_repo;
+    QPointer<LogWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, request, span, hash, details, emptyMessage] {
+        const QString from = span.from.isEmpty() ? repo.emptyTree() : span.from;
+        const QVector<FileEntry> files = span.working ? repo.workingChanges(from) : repo.changedFiles(from, span.to);
+        const QString message = hash.isEmpty() ? QString() : repo.commitMessage(hash);
+        const QVector<FileEntry> status = span.working && hash.isEmpty() ? repo.status() : QVector<FileEntry>{};
+        QMetaObject::invokeMethod(qApp, [self, request, files, status, message, details, emptyMessage, hash] {
+            if (!self || request != self->m_selectionRequest)
+                return;
+            self->m_commitFiles = files;
+            QString text = details;
+            if (!hash.isEmpty())
+                text = message + QStringLiteral("\n\n") + details;
+            else if (details.isEmpty()) {
+                int staged = 0, unstaged = 0, untracked = 0;
+                for (const FileEntry &e : status) {
+                    if (e.untracked()) { ++untracked; continue; }
+                    if (e.index != u' ') ++staged;
+                    if (e.worktree != u' ') ++unstaged;
+                }
+                QStringList counts;
+                if (staged) counts << tr("%1 staged").arg(staged);
+                if (unstaged) counts << tr("%1 not staged").arg(unstaged);
+                if (untracked) counts << tr("%1 untracked").arg(untracked);
+                text = tr("Working changes, not committed yet: %1.\n\n"
+                          "Shown against HEAD. Double-click the row, or right-click → Commit…, "
+                          "to commit them.").arg(counts.join(QStringLiteral(", ")));
+            }
+            self->m_details->setPlainText(text);
+            self->listCommitFiles();
+            if (files.isEmpty())
+                self->m_diff->showMessage({}, emptyMessage);
+        }, Qt::QueuedConnection);
+    });
 }
 
 void LogWindow::listCommitFiles()
@@ -602,35 +665,43 @@ void LogWindow::listCommitFiles()
 
 void LogWindow::showFileDiff()
 {
+    const int request = ++m_diffRequest;
     auto *fi = m_files->currentItem();
     if (!fi)
         return;
-    const FileEntry &f = m_commitFiles.at(fi->data(0, RowRole).toInt());
+    const FileEntry f = m_commitFiles.at(fi->data(0, RowRole).toInt());
+    const Span span = m_span;
+    const QString title = fi->text(0);
     m_diff->setFileName(f.path);   // the language for syntax colours
-    // For an image: the file at the older end (under its old name) and at the
-    // newer one -- a commit, or the working tree.
-    const QString before = m_span.from + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
-    const QString after = m_span.working ? QString() : m_span.to + QLatin1Char(':') + f.path;
-    const QString onDisk = QDir(m_repo.root()).filePath(f.path);
-    const ImageFetch images = [this, before, after, onDisk] {
-        auto blob = [this](const QString &rev, QByteArray *data) {
-            const GitResult r = m_repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), rev});
+    m_diff->showMessage(title, tr("Loading diff…"));
+    const GitRepo repo = m_repo;
+    QPointer<LogWindow> self(this);
+    QThreadPool::globalInstance()->start([self, repo, request, span, f, title] {
+        const QString from = span.from.isEmpty() ? repo.emptyTree() : span.from;
+        const QByteArray diff = span.working ? repo.diffWorking(f, from) : repo.diffBetween(from, span.to, f);
+        const QString before = from + QLatin1Char(':') + (f.oldPath.isEmpty() ? f.path : f.oldPath);
+        const QString after = span.working ? QString() : span.to + QLatin1Char(':') + f.path;
+        ImageSides sides;
+        auto blob = [&repo](const QString &rev, QByteArray *data) {
+            const GitResult r = repo.run({QStringLiteral("cat-file"), QStringLiteral("blob"), rev});
             *data = r.out;
             return r.ok();
         };
-        ImageSides s;
-        s.hasBefore = blob(before, &s.before);
+        sides.hasBefore = blob(before, &sides.before);
         if (after.isEmpty()) {
-            QFile file(onDisk);
-            s.hasAfter = file.open(QIODevice::ReadOnly);
-            s.after = file.readAll();
+            QFile file(QDir(repo.root()).filePath(f.path));
+            sides.hasAfter = file.open(QIODevice::ReadOnly);
+            if (sides.hasAfter)
+                sides.after = file.readAll();
         } else {
-            s.hasAfter = blob(after, &s.after);
+            sides.hasAfter = blob(after, &sides.after);
         }
-        return s;
-    };
-    const QByteArray diff = m_span.working ? m_repo.diffWorking(f, m_span.from) : m_repo.diffBetween(m_span.from, m_span.to, f);
-    m_diff->showDiff(fi->text(0), diff, false, images);
+        QMetaObject::invokeMethod(qApp, [self, request, title, diff, sides] {
+            if (!self || request != self->m_diffRequest)
+                return;
+            self->m_diff->showDiff(title, diff, false, [sides] { return sides; });
+        }, Qt::QueuedConnection);
+    });
 }
 
 void LogWindow::showCommitMenu(const QPoint &pos)
