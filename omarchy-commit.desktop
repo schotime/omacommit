@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Git Commit
+Name=Omacommit
 Comment=TortoiseGit-style commit dialog themed by Omarchy
-Exec=og commit %f
+Exec=oc commit %f
 Icon=omarchy-commit
 Terminal=false
 Categories=Development;RevisionControl;

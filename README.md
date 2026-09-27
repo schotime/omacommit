@@ -1,7 +1,7 @@
-# og — Omarchy Git
+# Omacommit (`oc`) — Git for Omarchy
 
 A TortoiseGit-style Git UI for Omarchy, written in C++ / Qt 6.
-The commit dialog (`og commit`) is the first subcommand.
+The commit dialog (`oc commit`) is the first subcommand.
 It shows a checkable file list and message editor on the left and a side-by-side
 diff of the selected file on the right, all colored by your current Omarchy theme.
 
@@ -19,10 +19,10 @@ cmake --install build
 
 It builds optimised (Release) unless you pass another `CMAKE_BUILD_TYPE`.
 Syntax highlighting uses KDE's library (`syntax-highlighting`, only needing
-Qt); without it og builds the same and shows code as plain text — CMake says
+Qt); without it oc builds the same and shows code as plain text — CMake says
 which when configuring.
 
-That installs `~/.local/bin/og`,
+That installs `~/.local/bin/oc`,
 `~/.local/share/applications/omarchy-commit.desktop` and its icon
 (`~/.local/share/icons/hicolor/scalable/apps/omarchy-commit.svg`), and needs no
 root.
@@ -31,7 +31,7 @@ Drop the `CMAKE_INSTALL_PREFIX` line to install under `/usr/local` for every
 user on the machine instead (`cmake --install` then needs `sudo`).
 
 **Install it rather than running it out of `build/`.** xdg-desktop-portal
-resolves the app by looking up `omarchy-commit.desktop` and then the `og` on
+resolves the app by looking up `omarchy-commit.desktop` and then the `oc` on
 its own `PATH`; until both exist it logs
 
 ```
@@ -43,7 +43,7 @@ the portal's search path, so a user install is enough to silence it.
 
 ### Windows: single executable
 
-The released `og.exe` needs no MSYS2 or Qt installation on the machine where
+The released `oc.exe` needs no MSYS2 or Qt installation on the machine where
 it runs. MSYS2 is **only the build toolchain** used to make that executable.
 To build it yourself, install [MSYS2](https://www.msys2.org/), open its
 **UCRT64** shell, and run:
@@ -57,16 +57,16 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
   perl git mingw-w64-ucrt-x86_64-python
 cd /d/path/to/omacommit
 ./scripts/build-windows.sh
-./build-standalone/og.exe --version
+./build-standalone/oc.exe --version
 ```
 
-Copy `build-standalone/og.exe` anywhere and launch it directly (including by
+Copy `build-standalone/oc.exe` anywhere and launch it directly (including by
 double-click). It links Qt, KDE's syntax-highlighting library and its language
 definitions, Qt plugins, codecs and the compiler runtime into
 the executable; Windows system DLLs are still used. **Git for Windows must be
-installed and on PATH** for repository operations: og invokes the real `git`
+installed and on PATH** for repository operations: oc invokes the real `git`
 binary so Git hooks, signing and credential helpers work. The Omarchy theme
-and agent are optional on Windows; without them og uses fallback colours and
+and agent are optional on Windows; without them oc uses fallback colours and
 disables **Write**.
 
 Static linking Qt under LGPL has additional license obligations when
@@ -76,9 +76,9 @@ modified Qt); check your Qt licensing terms before distribution.
 ## Use
 
 ```sh
-og                  # commit dialog for the repo containing the current directory
-og commit           # the same thing, spelled out
-og commit ~/code/app  # a specific repo
+oc                  # commit dialog for the repo containing the current directory
+oc commit           # the same thing, spelled out
+oc commit ~/code/app  # a specific repo
 ```
 
 Launched from a menu with no repo, it asks you to pick one in the desktop's file
@@ -86,27 +86,27 @@ chooser (the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal
 
 | Subcommand | Alias | What it opens |
 | --- | --- | --- |
-| `og commit` | `og c` | The commit dialog below. Also the default when none is given. |
-| `og log` | `og l` | The history browser, see below. |
-| `og resolve` | `og r` | Conflict resolution, see below. |
+| `oc commit` | `oc c` | The commit dialog below. Also the default when none is given. |
+| `oc log` | `oc l` | The history browser, see below. |
+| `oc resolve` | `oc r` | Conflict resolution, see below. |
 
-A directory literally named `c`, `l` or `r` needs a path prefix (`og ./l`).
+A directory literally named `c`, `l` or `r` needs a path prefix (`oc ./l`).
 
 They are pages of one window, so you can move between them without anything
 opening or closing. The top of each page is a row of tabs — **Commit · Log**,
 plus **Resolve** while there are conflicts — with the page you're on as the
 heading; click another to switch. Ctrl+L or Ctrl+Tab switch between commit and
 the log, and a conflicted file's **Resolve…** opens resolve on that file. Each page stays as you left it — message,
-ticks, selection, unsaved edits. Esc goes back to the page og was started on,
+ticks, selection, unsaved edits. Esc goes back to the page oc was started on,
 and closes the window from there.
 
-`og --help` lists these; `og --version` prints the version.
+`oc --help` lists these; `oc --version` prints the version.
 
 Hyprland binding that opens it for the repo of the focused terminal
 (add to `~/.config/hypr/bindings.conf`):
 
 ```
-bind = SUPER SHIFT, G, exec, og commit "$(omarchy-cmd-terminal-cwd)"
+bind = SUPER SHIFT, G, exec, oc commit "$(omarchy-cmd-terminal-cwd)"
 ```
 
 The window's class / app_id is `omarchy-commit`, so you can target it with a
@@ -126,7 +126,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 | Ctrl+L, Ctrl+Tab | Switch between the commit dialog and the log (from resolve: the log) |
 | Ctrl+O | Open a recently used repository, or choose another |
 | F5 | Refresh |
-| Esc | Back to the page og started on; there, close (the message is kept as a draft) |
+| Esc | Back to the page oc started on; there, close (the message is kept as a draft) |
 
 ## How it behaves
 
@@ -148,7 +148,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   takes it out, and side by side a changed line's old and new halves go
   together — inline, pick either on its own. Staging from the diff is exact even
   while whitespace is ignored, and if something else changed the file's index
-  entry since the diff was shown, og shows it afresh instead of guessing.
+  entry since the diff was shown, oc shows it afresh instead of guessing.
 - **The diff follows the row**: a *Staged* row shows HEAD → index (read-only),
   a *Changes* row shows index → working tree.
 - **Side by side or inline.** The ◫ / ☰ button next to ↑↓ switches the diff
@@ -162,7 +162,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   over a checkerboard so transparency shows, fitted but never enlarged, with
   each version's size in pixels and bytes. A new or deleted image shows the one
   side it has. An SVG opens as its text diff, with a *Picture* / *Source*
-  button to switch (remembered). In `og resolve`, a conflicted image shows both
+  button to switch (remembered). In `oc resolve`, a conflicted image shows both
   sides above the buttons that pick one.
 - **Code is in colour** — keywords, strings, comments, numbers — in about 300
   languages picked by file name, with the Omarchy theme's colours, in every
@@ -176,14 +176,14 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   *whitespace ignored* note in the header. You can still edit and use the *Use
   left …* actions while ignoring; the option waits until unsaved edits are saved
   or discarded. It only changes what you see, never what is saved or committed.
-- **Whitespace problems are flagged** in `og commit`, on the lines you are adding:
+- **Whitespace problems are flagged** in `oc commit`, on the lines you are adding:
   trailing whitespace, a space before a tab in the indent, a blank line added at
   the end of the file — whatever `git diff --check` would report, under your
   `core.whitespace` and `.gitattributes`. The spot is marked in red (hover it for
   what's wrong) and the header counts them; it never blocks a commit. Existing
   whitespace in lines you didn't touch isn't flagged, and neither is a CRLF line
   ending. Markdown uses two trailing spaces for a line break, which git flags
-  too; to allow them for both git and og, add to `.gitattributes`:
+  too; to allow them for both git and oc, add to `.gitattributes`:
 
   ```
   *.md whitespace=-blank-at-eol
@@ -234,7 +234,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 
 ## Log
 
-`og log` shows the history as a graph: each commit with its branch and tag
+`oc log` shows the history as a graph: each commit with its branch and tag
 names (current branch bold, local branches, remotes and tags in their own
 colours) and a ring on the commit HEAD is on. Selecting a commit shows its
 message and details, and the files it changed under the graph; selecting a
@@ -253,12 +253,12 @@ F5 reloads, Ctrl+L or Ctrl+Tab goes to the commit dialog, Esc goes back (or clos
 
 ## Resolve
 
-`og resolve [path]` resolves merge conflicts, TortoiseGitMerge style: the
+`oc resolve [path]` resolves merge conflicts, TortoiseGitMerge style: the
 conflicted files on the left, the two sides on top (aligned, read-only) and
 the merged file below (editable, what gets saved). Pass a conflicted file to
-open it first; `og commit` also offers **Resolve…** on a conflicted file.
+open it first; `oc commit` also offers **Resolve…** on a conflicted file.
 
-- Your own work is always on the right, as in every other diff in og, and
+- Your own work is always on the right, as in every other diff in oc, and
   the sides are named by what they are, never "ours"/"theirs" — which git
   swaps during a rebase. Merging: *Theirs — feature/x* | *Mine — HEAD (main)*.
   Rebasing: *Upstream — main + 1 of your commits, already replayed* | *Mine —
@@ -273,7 +273,7 @@ open it first; `og commit` also offers **Resolve…** on a conflicted file.
   asking first if conflicts remain.
 - Binary files, and files deleted on one side, get whole-file choices: use
   or keep one side, or delete it.
-- Once nothing is left unresolved, **Commit merge…** opens `og commit` with
+- Once nothing is left unresolved, **Commit merge…** opens `oc commit` with
   git's prepared message (also for cherry-picks and reverts). In a rebase,
   **Continue rebase** replays the next commit (`git rebase --continue`, keeping
   its message): the window moves on to that commit's conflicts, with the sides
@@ -285,7 +285,7 @@ open it first; `og commit` also offers **Resolve…** on a conflicted file.
 
 Colours come from the active Omarchy theme's `colors.toml`, in
 `~/.local/state/omarchy/current/theme/` (or `~/.config/omarchy/current/theme/` on
-older Omarchy releases). og watches it and re-colours open windows live when you
+older Omarchy releases). oc watches it and re-colours open windows live when you
 switch themes. The font comes from `omarchy-font-current` (fallback: JetBrainsMono
 Nerd Font).
 

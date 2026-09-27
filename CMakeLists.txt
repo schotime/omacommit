@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(og VERSION 0.1.0 LANGUAGES CXX)
+project(oc VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,7 +35,7 @@ if(OG_STANDALONE)
         if(NOT EXISTS "${_og_static_lib_dir}/${_og_archive}")
             message(FATAL_ERROR "Missing static library: ${_og_static_lib_dir}/${_og_archive}")
         endif()
-        set(${_og_var} "${_og_static_lib_dir}/${_og_archive}" CACHE FILEPATH "Static library for og" FORCE)
+        set(${_og_var} "${_og_static_lib_dir}/${_og_archive}" CACHE FILEPATH "Static library for oc" FORCE)
     endforeach()
     # This must follow Qt's transitive libraries, not just our direct Qt target.
     # CMake emits the standard libraries at the very end of the link line.
@@ -51,7 +51,7 @@ if(OG_STANDALONE)
     endif()
 endif()
 
-add_executable(og
+add_executable(oc
     src/main.cpp
     src/Agent.cpp
     src/Style.cpp
@@ -69,14 +69,14 @@ add_executable(og
     src/PageTabs.cpp
 )
 if(WIN32)
-    set_target_properties(og PROPERTIES WIN32_EXECUTABLE TRUE)
+    set_target_properties(oc PROPERTIES WIN32_EXECUTABLE TRUE)
     enable_language(RC)
-    target_sources(og PRIVATE icons/og.rc)
+    target_sources(oc PRIVATE icons/oc.rc)
 endif()
 # The SVG is a Qt resource for the window; Windows Explorer reads the separate
 # ICO from the native executable resource rather than the Qt resource.
-qt_add_resources(og icons PREFIX "/" FILES icons/omarchy-commit.svg)
-target_link_libraries(og PRIVATE Qt6::Widgets)
+qt_add_resources(oc icons PREFIX "/" FILES icons/omarchy-commit.svg)
+target_link_libraries(oc PRIVATE Qt6::Widgets)
 # Syntax highlighting is optional on Linux, but required for the Windows
 # standalone build so a missing static library cannot silently ship plain text.
 find_package(KF6SyntaxHighlighting QUIET)
@@ -90,8 +90,8 @@ if(OG_STANDALONE AND KF6SyntaxHighlighting_FOUND)
     endif()
 endif()
 if(KF6SyntaxHighlighting_FOUND)
-    target_link_libraries(og PRIVATE KF6::SyntaxHighlighting)
-    target_compile_definitions(og PRIVATE OG_SYNTAX)
+    target_link_libraries(oc PRIVATE KF6::SyntaxHighlighting)
+    target_compile_definitions(oc PRIVATE OG_SYNTAX)
     message(STATUS "Syntax highlighting: on (KF6SyntaxHighlighting)")
 else()
     message(STATUS "Syntax highlighting: off (install KF6SyntaxHighlighting to turn it on)")
@@ -100,18 +100,18 @@ if(OG_STANDALONE)
     # Syntax highlighting only uses the parser, not KDE's definition downloader.
     # Keep the Qt Network archive for the rest of Qt, but omit its optional TLS
     # plugins (and their OpenSSL DLL dependencies) from this single-file build.
-    qt_import_plugins(og EXCLUDE_BY_TYPE tls)
+    qt_import_plugins(oc EXCLUDE_BY_TYPE tls)
 endif()
 # MSYS2's static Qt brings in image plugins and codecs with circular static
 # dependencies. Group the archives and force the static libb2 before any Qt
 # import library can pull in its DLL version.
 if(OG_STANDALONE)
-    target_link_options(og PRIVATE -static -static-libgcc -static-libstdc++
+    target_link_options(oc PRIVATE -static -static-libgcc -static-libstdc++
         -Wl,--whole-archive "${_og_static_lib_dir}/libb2.a"
         "${_og_static_lib_dir}/libbrotlidec.a" "${_og_static_lib_dir}/libbrotlicommon.a"
         -Wl,--no-whole-archive
         -Wl,--start-group)
-    target_link_libraries(og PRIVATE
+    target_link_libraries(oc PRIVATE
         "${_og_static_lib_dir}/libfreetype.a"
         "${_og_static_lib_dir}/libtiff.a"
         "${_og_static_lib_dir}/libbrotlidec.a"
@@ -130,14 +130,14 @@ endif()
 # The desktop's file chooser (XDG portal, over D-Bus): Linux only.
 if(UNIX AND NOT APPLE)
     find_package(Qt6 REQUIRED COMPONENTS DBus)
-    target_sources(og PRIVATE src/Portal.cpp)
-    target_link_libraries(og PRIVATE Qt6::DBus)
-    target_compile_definitions(og PRIVATE OG_PORTAL)
+    target_sources(oc PRIVATE src/Portal.cpp)
+    target_link_libraries(oc PRIVATE Qt6::DBus)
+    target_compile_definitions(oc PRIVATE OG_PORTAL)
 endif()
-target_compile_definitions(og PRIVATE OG_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(oc PRIVATE OG_VERSION="${PROJECT_VERSION}")
 
 include(GNUInstallDirs)
-install(TARGETS og RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS oc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(UNIX AND NOT APPLE)
     install(FILES omarchy-commit.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES icons/omarchy-commit.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)

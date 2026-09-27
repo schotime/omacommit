@@ -13,6 +13,7 @@
 #include <QIcon>
 #include <QHash>
 #include <QMessageBox>
+#include <QSettings>
 
 #include <cstdio>
 
@@ -30,12 +31,12 @@ namespace {
 
 void printUsage()
 {
-    std::printf("og — Omarchy Git\n"
+    std::printf("oc — Omacommit, Git for Omarchy\n"
                 "\n"
                 "Usage:\n"
-                "  og [commit|c] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
-                "  og log|l [path]        History: commit graph, changed files and their diffs\n"
-                "  og resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
+                "  oc [commit|c] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
+                "  oc log|l [path]        History: commit graph, changed files and their diffs\n"
+                "  oc resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
                 "\n"
                 "Options:\n"
                 "  -h, --help             Show this help\n"
@@ -53,10 +54,10 @@ void reportStartupError(const QString &message)
     const bool hasTerminal = ::isatty(STDERR_FILENO);
 #endif
     if (hasTerminal) {
-        std::fprintf(stderr, "og: %s\n", qPrintable(message));
+        std::fprintf(stderr, "oc: %s\n", qPrintable(message));
         return;
     }
-    QMessageBox::critical(nullptr, QStringLiteral("og"), message);
+    QMessageBox::critical(nullptr, QStringLiteral("Omacommit"), message);
 }
 
 } // namespace
@@ -68,13 +69,23 @@ int main(int argc, char *argv[])
     // construction, and a name set afterwards arrives too late to be used --
     // the re-registration is refused with "Connection already associated with
     // an application ID".
-    QApplication::setApplicationName(QStringLiteral("og"));
+    QApplication::setApplicationName(QStringLiteral("oc"));
     QApplication::setOrganizationName(QStringLiteral("omarchy"));
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-commit"));   // Wayland app_id / Hyprland class
 
     QApplication app(argc, argv);
+    // The settings -- drafts, recent messages and repositories, diff options --
+    // were kept under og, the old name. Bring them over the first time.
+    {
+        QSettings now;
+        if (now.allKeys().isEmpty()) {
+            QSettings old(QStringLiteral("omarchy"), QStringLiteral("og"));
+            for (const QString &key : old.allKeys())
+                now.setValue(key, old.value(key));
+        }
+    }
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/omarchy-commit.svg")));
-    QApplication::setStyle(new Style);   // Fusion, with og's checkboxes
+    QApplication::setStyle(new Style);   // Fusion, with oc's checkboxes
 
     QStringList args = app.arguments();
     args.removeFirst();
@@ -84,7 +95,7 @@ int main(int argc, char *argv[])
         return 0;
     }
     if (args.contains(QStringLiteral("-V")) || args.contains(QStringLiteral("--version"))) {
-        std::printf("og %s\n", OG_VERSION);
+        std::printf("oc %s\n", OG_VERSION);
         return 0;
     }
 
@@ -105,7 +116,7 @@ int main(int argc, char *argv[])
 
     const bool hasPath = !args.isEmpty();
     QString start = hasPath ? args.first() : QDir::currentPath();
-    QString file;   // og resolve some/file: open that one first
+    QString file;   // oc resolve some/file: open that one first
     if (QFileInfo(start).isFile()) {
         file = QFileInfo(start).absoluteFilePath();
         start = QFileInfo(start).absolutePath();

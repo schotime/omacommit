@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run from the MSYS2 UCRT64 shell. The KDE library in MSYS2 is shared, so
-# build its static variant with definitions embedded before linking og.
+# build its static variant with definitions embedded before linking oc.
 if ! command -v git >/dev/null; then
     echo "git is needed to fetch KDE syntax-highlighting (pacman -S git)" >&2
     exit 1
