@@ -102,6 +102,11 @@ and closes the window from there.
 
 `oc --help` lists these; `oc --version` prints the version.
 
+Run from a terminal, `oc` gives the prompt straight back: it checks the path is
+in a repository (so a mistake is reported there), then leaves the window to a
+copy of itself in its own session, which closing the terminal doesn't close.
+`oc --wait` stays in the foreground until the window closes.
+
 Hyprland binding that opens it for the repo of the focused terminal
 (add to `~/.config/hypr/bindings.conf`):
 

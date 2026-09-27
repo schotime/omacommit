@@ -13,9 +13,12 @@
 #include <QIcon>
 #include <QHash>
 #include <QMessageBox>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QSettings>
 
 #include <cstdio>
+#include <cstdlib>
 
 #ifdef Q_OS_WIN
 #include <io.h>
@@ -39,6 +42,8 @@ void printUsage()
                 "  oc resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
                 "\n"
                 "Options:\n"
+                "  -w, --wait             Stay in the foreground until the window closes\n"
+                "                         (from a terminal, oc otherwise gives the prompt back)\n"
                 "  -h, --help             Show this help\n"
                 "  -V, --version          Show the version\n");
 }
@@ -60,10 +65,68 @@ void reportStartupError(const QString &message)
     QMessageBox::critical(nullptr, QStringLiteral("Omacommit"), message);
 }
 
+#ifdef Q_OS_UNIX
+// Started from a terminal, oc gives the prompt back, as gvim does: a copy of
+// itself, in a session of its own so closing the terminal doesn't close it,
+// shows the window while this one exits. The repository is checked first,
+// so a mistake is still reported here. Returns true when that copy is
+// running and this process should just exit; --wait stays in the foreground.
+bool detachFromTerminal(int argc, char *argv[])
+{
+    if (qEnvironmentVariableIsSet("OC_DETACHED")) {
+        qunsetenv("OC_DETACHED");   // the copy: carry on, and don't pass it down
+        return false;
+    }
+    if (!::isatty(STDIN_FILENO) && !::isatty(STDERR_FILENO))
+        return false;   // from a launcher: nothing to give back
+    QStringList args;
+    for (int i = 1; i < argc; ++i)
+        args << QString::fromLocal8Bit(argv[i]);
+    for (const char *stay : {"-w", "--wait", "-h", "--help", "-V", "--version"})
+        if (args.contains(QLatin1String(stay)))
+            return false;
+
+    QCoreApplication probe(argc, argv);   // for QProcess; gone before the real one
+    static const QStringList commands{QStringLiteral("commit"), QStringLiteral("c"), QStringLiteral("log"),
+                                      QStringLiteral("l"), QStringLiteral("resolve"), QStringLiteral("r")};
+    QStringList rest = args;
+    if (!rest.isEmpty() && commands.contains(rest.first()))
+        rest.removeFirst();
+    if (!rest.isEmpty()) {   // a path given: it has to be in a repository (without one, the copy asks)
+        QString start = rest.first();
+        if (QFileInfo(start).isFile())
+            start = QFileInfo(start).absolutePath();
+        if (GitRepo::findRoot(start).isEmpty()) {
+            std::fprintf(stderr, "oc: %s\n",
+                         qPrintable(QObject::tr("%1 is not inside a Git repository.").arg(rest.first())));
+            std::exit(1);
+        }
+    }
+
+    QProcess copy;
+    copy.setProgram(QCoreApplication::applicationFilePath());
+    copy.setArguments(args);
+    copy.setWorkingDirectory(QDir::currentPath());
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("OC_DETACHED"), QStringLiteral("1"));
+    copy.setProcessEnvironment(env);
+    copy.setStandardInputFile(QProcess::nullDevice());
+    copy.setStandardOutputFile(QProcess::nullDevice());
+    copy.setStandardErrorFile(QProcess::nullDevice());
+    copy.setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
+    return copy.startDetached();   // if it can't start, stay and run here
+}
+#endif
+
 } // namespace
 
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_UNIX
+    if (detachFromTerminal(argc, argv))
+        return 0;
+#endif
+
     // These are static setters, and they must run before QApplication is
     // constructed: Qt registers the process with the xdg-desktop-portal during
     // construction, and a name set afterwards arrives too late to be used --
@@ -89,6 +152,8 @@ int main(int argc, char *argv[])
 
     QStringList args = app.arguments();
     args.removeFirst();
+    args.removeAll(QStringLiteral("-w"));        // --wait: stay in the foreground, handled above
+    args.removeAll(QStringLiteral("--wait"));
 
     if (args.contains(QStringLiteral("-h")) || args.contains(QStringLiteral("--help"))) {
         printUsage();
