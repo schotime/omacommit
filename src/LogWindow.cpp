@@ -733,20 +733,33 @@ void LogWindow::showFileMenu(const QPoint &pos)
     const LogCommit c = m_log.at(ci->data(0, RowRole).toInt());
     const FileEntry f = m_commitFiles.at(fi->data(0, RowRole).toInt());
     QMenu menu(this);
+    QAction *revert = nullptr;
     if (m_commits->selectedItems().size() > 1) {   // a comparison, not one commit's change
         menu.addAction(tr("Revert… (select a single commit)"))->setEnabled(false);
-        menu.exec(m_files->viewport()->mapToGlobal(pos));
-        return;
-    }
-    QAction *revert = nullptr;
-    if (c.hash == WorkingHash) {
+    } else if (c.hash == WorkingHash) {
         revert = menu.addAction(tr("Revert to the last commit…"));
         revert->setEnabled(f.commitStatus != u'?' && f.commitStatus != u'U');
     } else {
         revert = menu.addAction(tr("Revert changes to this file by this commit…"));
         revert->setEnabled(m_repo.operation().isEmpty());
     }
-    if (menu.exec(m_files->viewport()->mapToGlobal(pos)) != revert)
+    // The file as it is now in the working tree, whichever commit shows it.
+    menu.addSeparator();
+    const QString onDisk = QDir(m_repo.root()).filePath(f.path);
+    QAction *open = menu.addAction(tr("Open in editor"));
+    QAction *show = menu.addAction(tr("Show in file manager"));
+    open->setEnabled(QFileInfo(onDisk).isFile());
+    show->setEnabled(open->isEnabled());
+    QAction *chosen = menu.exec(m_files->viewport()->mapToGlobal(pos));
+    if (chosen == open) {
+        OgWindow::openInEditor(onDisk);
+        return;
+    }
+    if (chosen == show) {
+        OgWindow::showInFileManager(onDisk);
+        return;
+    }
+    if (!revert || chosen != revert)
         return;
     if (c.hash == WorkingHash)
         revertWorkingFile(f);

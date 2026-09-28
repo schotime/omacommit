@@ -29,6 +29,12 @@ public:
     // room for a 50-column summary line in the message box, no more however
     // wide the window, so the rest goes to the diff.
     static int sidebarWidth(int total);
+    // Opens a file for editing: Omarchy's chosen editor when there is one (its
+    // default for text is a terminal app, which a plain desktop open can't
+    // start), otherwise whatever the desktop opens the file with.
+    static void openInEditor(const QString &path);
+    // Shows the file selected in the file manager, or at least its folder.
+    static void showInFileManager(const QString &path);
 
     // Ctrl+O: a menu of the repos og has recently opened, and a folder chooser.
     void chooseRepo();

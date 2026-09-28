@@ -87,4 +87,17 @@ Portal::Result Portal::pickDirectory(const QString &title, const QString &startD
     return waiter.response == 1 ? Result::Cancelled : Result::Unavailable;
 }
 
+bool Portal::showItem(const QString &path)
+{
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return false;
+    QDBusMessage call = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.FileManager1"),
+                                                       QStringLiteral("/org/freedesktop/FileManager1"),
+                                                       QStringLiteral("org.freedesktop.FileManager1"),
+                                                       QStringLiteral("ShowItems"));
+    call << QStringList{QUrl::fromLocalFile(path).toString()} << QString();
+    return bus.call(call).type() == QDBusMessage::ReplyMessage;
+}
+
 #include "Portal.moc"

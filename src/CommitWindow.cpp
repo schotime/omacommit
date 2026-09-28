@@ -715,10 +715,20 @@ void CommitWindow::showFileMenu(const QPoint &pos)
         discard = menu.addAction(tr("Discard unstaged changes…"));
         discard->setEnabled(!m_busy && !e.untracked() && !e.conflicted());
     }
+    menu.addSeparator();
+    const QString onDisk = QDir(m_repo.root()).filePath(e.path);
+    QAction *open = menu.addAction(tr("Open in editor"));
+    QAction *show = menu.addAction(tr("Show in file manager"));
+    open->setEnabled(QFileInfo(onDisk).isFile());   // not once it is deleted
+    show->setEnabled(open->isEnabled());
     QAction *chosen = menu.exec(m_files->viewport()->mapToGlobal(pos));
     if (!chosen)
         return;
-    if (chosen == stage) {
+    if (chosen == open) {
+        OgWindow::openInEditor(onDisk);
+    } else if (chosen == show) {
+        OgWindow::showInFileManager(onDisk);
+    } else if (chosen == stage) {
         stageFile(e);
     } else if (chosen == unstage) {
         unstageFile(e);

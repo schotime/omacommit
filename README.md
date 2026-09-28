@@ -232,6 +232,11 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   *Staged* row → Revert to the last commit…** drops both staged and unstaged
   changes; a newly added file (or the new name of a rename) is only un-added and
   stays on disk as untracked.
+- **Right-click any row → Open in editor** opens the working-tree file in
+  Omarchy's default editor (`omarchy-launch-editor`), or elsewhere in the
+  desktop's default application for it; **Show in file manager** opens its
+  folder with the file selected. Both are in the log's file list too, always
+  for the file as it is now.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
 - The window closes by itself when the working tree ends up clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
@@ -317,7 +322,6 @@ The terminal-style names older themes used (`color1`–`color4`,
 
 ## Roadmap ideas
 
-- Syntax highlighting in the diff
-- More file context menu entries: add to .gitignore, open in editor
+- More file context menu entries: add to .gitignore
 - Connector ribbon between the diff panes (TortoiseGitMerge-style)
 - PKGBUILD for the AUR

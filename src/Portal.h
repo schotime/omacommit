@@ -13,4 +13,8 @@ enum class Result { Picked, Cancelled, Unavailable };
 // FileChooser, so the caller can fall back to QFileDialog.
 Result pickDirectory(const QString &title, const QString &startDir, QString *picked);
 
+// Shows `path` selected in the file manager (org.freedesktop.FileManager1).
+// False when no file manager answers.
+bool showItem(const QString &path);
+
 }

@@ -8,17 +8,21 @@
 #endif
 
 #include <QCloseEvent>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QScrollBar>
 #include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardPaths>
+#include <QUrl>
 #include <QVBoxLayout>
 
 static const int MaxRecentRepos = 15;
@@ -104,6 +108,26 @@ int OgWindow::sidebarWidth(int total)
                    + 2 * probe.frameWidth() + probe.verticalScrollBar()->sizeHint().width()
                    + 28;   // + the panel's margins
     return qBound(int(total * 0.25), want, int(total * 0.45));
+}
+
+void OgWindow::openInEditor(const QString &path)
+{
+    const QString tool = QStandardPaths::findExecutable(QStringLiteral("omarchy-launch-editor"));
+    if (!tool.isEmpty() && QProcess::startDetached(tool, {path}))
+        return;
+    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void OgWindow::showInFileManager(const QString &path)
+{
+#ifdef Q_OS_WIN
+    if (QProcess::startDetached(QStringLiteral("explorer"), {QStringLiteral("/select,") + QDir::toNativeSeparators(path)}))
+        return;
+#elif defined(OG_PORTAL)
+    if (Portal::showItem(path))
+        return;
+#endif
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 }
 
 static QSplitter *pageSplit(QWidget *page)
