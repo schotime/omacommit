@@ -69,7 +69,10 @@ add_executable(oc
     src/PageTabs.cpp
 )
 if(WIN32)
-    set_target_properties(oc PROPERTIES WIN32_EXECUTABLE TRUE)
+    # A GUI-subsystem executable loses stdout/stderr when launched from an
+    # interactive Git Bash terminal. Keep the console subsystem so --help,
+    # --version and startup errors reach the invoking shell without a wrapper.
+    set_target_properties(oc PROPERTIES WIN32_EXECUTABLE FALSE)
     enable_language(RC)
     target_sources(oc PRIVATE icons/oc.rc)
 endif()

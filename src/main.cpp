@@ -19,8 +19,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #ifdef Q_OS_WIN
+#include <windows.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -32,20 +34,54 @@
 
 namespace {
 
+void printToTerminal(const char *text, bool error = false)
+{
+#ifdef Q_OS_WIN
+    // A GUI-subsystem executable may have unusable C runtime streams in Git
+    // Bash, even though the inherited Windows pipe is still usable.
+    const HANDLE handle = ::GetStdHandle(error ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE);
+    const DWORD length = static_cast<DWORD>(std::strlen(text));
+    DWORD written = 0;
+    if (handle != INVALID_HANDLE_VALUE && handle != nullptr
+        && ::WriteFile(handle, text, length, &written, nullptr))
+        return;
+#endif
+    std::fputs(text, error ? stderr : stdout);
+    std::fflush(error ? stderr : stdout);
+}
+
 void printUsage()
 {
-    std::printf("oc — Omacommit, Git for Omarchy\n"
-                "\n"
-                "Usage:\n"
-                "  oc [commit|c] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
-                "  oc log|l [path]        History: commit graph, changed files and their diffs\n"
-                "  oc resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
-                "\n"
-                "Options:\n"
-                "  -w, --wait             Stay in the foreground until the window closes\n"
-                "                         (from a terminal, oc otherwise gives the prompt back)\n"
-                "  -h, --help             Show this help\n"
-                "  -V, --version          Show the version\n");
+    printToTerminal("oc — Omacommit, Git for Omarchy\n"
+                    "\n"
+                    "Usage:\n"
+                    "  oc [commit|c] [path]   Commit dialog for the repo containing <path> (default: cwd)\n"
+                    "  oc log|l [path]        History: commit graph, changed files and their diffs\n"
+                    "  oc resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
+                    "\n"
+                    "Options:\n"
+                    "  -w, --wait             Stay in the foreground until the window closes\n"
+                    "                         (from a terminal, oc otherwise gives the prompt back)\n"
+                    "  -h, --help             Show this help\n"
+                    "  -V, --version          Show the version\n");
+}
+
+bool hasTerminal()
+{
+#ifdef Q_OS_WIN
+    if (::_isatty(::_fileno(stderr)) || ::_isatty(::_fileno(stdout)))
+        return true;
+    DWORD mode = 0;
+    const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != INVALID_HANDLE_VALUE && out != nullptr && ::GetConsoleMode(out, &mode))
+        return true;
+    // Git Bash connects Windows programs through pipes, so neither isatty()
+    // nor GetConsoleMode() identifies its terminal. MSYSTEM is set by its
+    // shells but not by Explorer or a desktop launcher.
+    return qEnvironmentVariableIsSet("MSYSTEM") && out != INVALID_HANDLE_VALUE && out != nullptr;
+#else
+    return ::isatty(STDERR_FILENO) || ::isatty(STDOUT_FILENO);
+#endif
 }
 
 // Startup failures reach the user differently depending on how og was launched:
@@ -53,19 +89,15 @@ void printUsage()
 // entry there is no terminal to read, so it has to be a dialog.
 void reportStartupError(const QString &message)
 {
-#ifdef Q_OS_WIN
-    const bool hasTerminal = ::_isatty(::_fileno(stderr));
-#else
-    const bool hasTerminal = ::isatty(STDERR_FILENO);
-#endif
-    if (hasTerminal) {
-        std::fprintf(stderr, "oc: %s\n", qPrintable(message));
+    if (hasTerminal()) {
+        const QByteArray text = "oc: " + message.toLocal8Bit() + '\n';
+        printToTerminal(text.constData(), true);
         return;
     }
     QMessageBox::critical(nullptr, QStringLiteral("Omacommit"), message);
 }
 
-#ifdef Q_OS_UNIX
+#if defined(Q_OS_UNIX) || defined(Q_OS_WIN)
 // Started from a terminal, oc gives the prompt back, as gvim does: a copy of
 // itself, in a session of its own so closing the terminal doesn't close it,
 // shows the window while this one exits. The repository is checked first,
@@ -77,7 +109,7 @@ bool detachFromTerminal(int argc, char *argv[])
         qunsetenv("OC_DETACHED");   // the copy: carry on, and don't pass it down
         return false;
     }
-    if (!::isatty(STDIN_FILENO) && !::isatty(STDERR_FILENO))
+    if (!hasTerminal())
         return false;   // from a launcher: nothing to give back
     QStringList args;
     for (int i = 1; i < argc; ++i)
@@ -97,8 +129,9 @@ bool detachFromTerminal(int argc, char *argv[])
         if (QFileInfo(start).isFile())
             start = QFileInfo(start).absolutePath();
         if (GitRepo::findRoot(start).isEmpty()) {
-            std::fprintf(stderr, "oc: %s\n",
-                         qPrintable(QObject::tr("%1 is not inside a Git repository.").arg(rest.first())));
+            const QByteArray text = "oc: " + QObject::tr("%1 is not inside a Git repository.")
+                                                  .arg(rest.first()).toLocal8Bit() + '\n';
+            printToTerminal(text.constData(), true);
             std::exit(1);
         }
     }
@@ -113,7 +146,13 @@ bool detachFromTerminal(int argc, char *argv[])
     copy.setStandardInputFile(QProcess::nullDevice());
     copy.setStandardOutputFile(QProcess::nullDevice());
     copy.setStandardErrorFile(QProcess::nullDevice());
+#ifdef Q_OS_WIN
+    copy.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    });
+#else
     copy.setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
+#endif
     return copy.startDetached();   // if it can't start, stay and run here
 }
 #endif
@@ -122,10 +161,26 @@ bool detachFromTerminal(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-#ifdef Q_OS_UNIX
+#if defined(Q_OS_UNIX) || defined(Q_OS_WIN)
     if (detachFromTerminal(argc, argv))
         return 0;
 #endif
+
+    // Keep CLI-only options out of QApplication: constructing the GUI
+    // application can alter the standard handles of a Windows GUI executable
+    // under Git Bash before it gets the chance to print them.
+    QStringList earlyArgs;
+    for (int i = 1; i < argc; ++i)
+        earlyArgs << QString::fromLocal8Bit(argv[i]);
+    if (earlyArgs.contains(QStringLiteral("-h")) || earlyArgs.contains(QStringLiteral("--help"))) {
+        printUsage();
+        return 0;
+    }
+    if (earlyArgs.contains(QStringLiteral("-V")) || earlyArgs.contains(QStringLiteral("--version"))) {
+        const QByteArray text = QStringLiteral("oc %1\n").arg(OG_VERSION).toLocal8Bit();
+        printToTerminal(text.constData());
+        return 0;
+    }
 
     // These are static setters, and they must run before QApplication is
     // constructed: Qt registers the process with the xdg-desktop-portal during
@@ -154,15 +209,6 @@ int main(int argc, char *argv[])
     args.removeFirst();
     args.removeAll(QStringLiteral("-w"));        // --wait: stay in the foreground, handled above
     args.removeAll(QStringLiteral("--wait"));
-
-    if (args.contains(QStringLiteral("-h")) || args.contains(QStringLiteral("--help"))) {
-        printUsage();
-        return 0;
-    }
-    if (args.contains(QStringLiteral("-V")) || args.contains(QStringLiteral("--version"))) {
-        std::printf("oc %s\n", OG_VERSION);
-        return 0;
-    }
 
     // A leading subcommand is optional; anything else is taken as a path.
     QString command = QStringLiteral("commit");
