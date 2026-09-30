@@ -1432,7 +1432,7 @@ void CommitWindow::writeMessage()
         m_tmp = std::make_unique<QTemporaryDir>();
     const QString replyFile = m_tmp->filePath(QStringLiteral("reply"));
     QFile::remove(replyFile);
-    if (m_agent.id == u"opencode") {
+    if (m_agent.id == u"opencode" && !m_agent.opencodeV2) {
         QFile promptFile(replyFile);
         if (!promptFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
             promptFile.write(prompt.toUtf8()) != prompt.toUtf8().size()) {
@@ -1447,8 +1447,33 @@ void CommitWindow::writeMessage()
     m_writer->setWorkingDirectory(m_repo.root());
     if (m_agent.id == u"opencode") {
         auto env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("OPENCODE_PERMISSION"), QStringLiteral("{\"*\":\"deny\"}"));
-        env.insert(QStringLiteral("OPENCODE_DISABLE_DEFAULT_PLUGINS"), QStringLiteral("true"));
+        if (m_agent.opencodeV2) {
+            // v2 no longer supports --pure or OPENCODE_PERMISSION. A private
+            // server and a temporary project avoid loading repo instructions
+            // and plugins while retaining the user's provider/model settings.
+            // The agent's final deny rule covers tool calls, including plugins.
+            const QString configDir = m_tmp->filePath(QStringLiteral("opencode/.opencode"));
+            if (!QDir().mkpath(configDir)) {
+                showError(tr("Could not prepare OpenCode's configuration"), configDir);
+                m_writer->deleteLater();
+                m_writer = nullptr;
+                return;
+            }
+            QFile config(configDir + QStringLiteral("/opencode.json"));
+            const QByteArray settings = R"({"agents":{"oc-commit-writer":{"mode":"primary","description":"Write a commit message without tools","permissions":[{"action":"*","resource":"*","effect":"deny"}]}}})";
+            if (!config.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                || config.write(settings) != settings.size()) {
+                showError(tr("Could not prepare OpenCode's configuration"), config.errorString());
+                m_writer->deleteLater();
+                m_writer = nullptr;
+                return;
+            }
+            config.close();
+            m_writer->setWorkingDirectory(QFileInfo(configDir).absolutePath());
+        } else {
+            env.insert(QStringLiteral("OPENCODE_PERMISSION"), QStringLiteral("{\"*\":\"deny\"}"));
+            env.insert(QStringLiteral("OPENCODE_DISABLE_DEFAULT_PLUGINS"), QStringLiteral("true"));
+        }
         m_writer->setProcessEnvironment(env);
     }
     auto *limit = new QTimer(m_writer);   // a stuck agent shouldn't hold the dialog forever
@@ -1521,7 +1546,7 @@ void CommitWindow::writeMessage()
     m_message->setReadOnly(true);
     m_status->setText(tr("Writing a message with %1…").arg(m_agent.name));
     m_writer->start(m_agent.program(), m_agent.arguments(replyFile));
-    if (m_agent.id != u"opencode")
+    if (m_agent.id != u"opencode" || m_agent.opencodeV2)
         m_writer->write(prompt.toUtf8());
     m_writer->closeWriteChannel();
     updateWriteButton();

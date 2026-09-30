@@ -219,8 +219,10 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   it matches the repository's style, and your draft if you started one; the
   reply replaces the message as one undo step, so Ctrl+Z restores what you had.
   Nothing is sent until you click. Claude runs with no tools, Codex in a
-  read-only sandbox, and OpenCode with permissions denied and default plugins
-  disabled. **■ Stop** cancels it. The button is hidden when none are
+  read-only sandbox, and OpenCode with tool permissions denied. OpenCode 1
+  runs with `--pure` and default plugins disabled; OpenCode 2 uses a private
+  server and a restricted agent in a temporary project (global plugins may
+  still load). **■ Stop** cancels it. The button is hidden when none are
   installed.
 - **Amend** pre-fills the last message, and *Staged* becomes *Staged, with the
   last commit*: the index against HEAD's parent, so the last commit's files are

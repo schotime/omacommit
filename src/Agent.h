@@ -12,12 +12,13 @@ struct Agent {
     bool supported = false;   // og knows how to run it one-shot
     bool installed = false;   // really installed, not Omarchy's install-on-first-run stub
     QString executable;       // resolved path, including .cmd on Windows
+    bool opencodeV2 = false;   // v2 has no --pure and uses different permissions
 
     static Agent detect();
     static QVector<Agent> available();
     bool usable() const { return supported && installed; }
 
-    QString program() const { return executable; }
+    QString program() const;
     // Arguments for a one-shot run with the prompt on stdin. When the reply
     // is written to a file rather than stdout, `replyFile` is that file.
     QStringList arguments(const QString &replyFile) const;
