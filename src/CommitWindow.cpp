@@ -198,6 +198,15 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_diff->leftFile = [this] { return m_diffBase; };
     m_diff->onSaveRequested = [this] { saveEdited(); };
     m_diff->onOptionsChanged = [this] { showCurrentDiff(); };
+    m_diff->stepFile = [this](int step) {   // over the section headings, to the next file row
+        QTreeWidgetItem *it = m_files->currentItem();
+        do
+            it = step < 0 ? m_files->itemAbove(it) : m_files->itemBelow(it);
+        while (it && !entryOf(it));
+        if (it)   // explicitly, or the Ctrl still held would add to the selection
+            m_files->setCurrentItem(it, 0, QItemSelectionModel::ClearAndSelect);
+        return it != nullptr;
+    };
 
     // --- layout
     auto *left = new QWidget;

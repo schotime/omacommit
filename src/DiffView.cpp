@@ -4,6 +4,9 @@
 #include "Syntax.h"
 #include "Theme.h"
 
+#include <utility>
+
+#include <QApplication>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -15,6 +18,7 @@
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSettings>
+#include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTextBlock>
@@ -596,12 +600,14 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
 
     m_prev = new QToolButton;
     m_prev->setText(QStringLiteral("↑"));
-    m_prev->setToolTip(tr("Previous change (Alt+Up)"));
+    m_prev->setToolTip(tr("Previous change (Alt+Up)\nCtrl+click: on into the previous file (Ctrl+Alt+Up)"));
     m_prev->setShortcut(QKeySequence(QStringLiteral("Alt+Up")));
     m_next = new QToolButton;
     m_next->setText(QStringLiteral("↓"));
-    m_next->setToolTip(tr("Next change (Alt+Down)"));
+    m_next->setToolTip(tr("Next change (Alt+Down)\nCtrl+click: on into the next file (Ctrl+Alt+Down)"));
     m_next->setShortcut(QKeySequence(QStringLiteral("Alt+Down")));
+    m_prevFile = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+Up")), this);
+    m_nextFile = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+Down")), this);
 
     m_modeBtn = new QToolButton;
     m_prefInline = QSettings().value(QStringLiteral("diff/inline"), false).toBool();
@@ -750,8 +756,11 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
         if (onSaveRequested)
             onSaveRequested();
     });
-    connect(m_prev, &QToolButton::clicked, this, [this] { prevChange(); });
-    connect(m_next, &QToolButton::clicked, this, [this] { nextChange(); });
+    const auto ctrl = [] { return QApplication::keyboardModifiers().testFlag(Qt::ControlModifier); };
+    connect(m_prev, &QToolButton::clicked, this, [this, ctrl] { stepChange(-1, ctrl()); });
+    connect(m_next, &QToolButton::clicked, this, [this, ctrl] { stepChange(1, ctrl()); });
+    connect(m_prevFile, &QShortcut::activated, this, [this] { stepChange(-1, true); });
+    connect(m_nextFile, &QShortcut::activated, this, [this] { stepChange(1, true); });
 
     // A click always flips what you see: from the automatic inline fallback it
     // means side by side anyway (until there is room again).
@@ -905,10 +914,14 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
     m_textDiff = diff;
     updateImageButton();
     QTimer::singleShot(0, this, [this, sameFile, keepScroll] {   // after layout, so the viewport height is known
-        if (sameFile)
+        const bool last = std::exchange(m_landOnLast, false);
+        if (sameFile) {
             activeScrollBar()->setValue(keepScroll);
-        else if (!m_changeStarts.isEmpty())
-            nextChange();
+        } else if (!m_changeStarts.isEmpty()) {
+            if (last)
+                m_current = int(m_changeStarts.size());   // so prevChange lands on the last
+            last ? prevChange() : nextChange();
+        }
     });
 }
 
@@ -1280,12 +1293,31 @@ void DiffView::prevChange()
     updateNav();
 }
 
+// Ctrl: past the first or last change (or from a file with none to step
+// through, like an image) on into the neighbouring file.
+void DiffView::stepChange(int step, bool acrossFiles)
+{
+    const bool any = !m_changeStarts.isEmpty() && showingRows();
+    const bool atEnd = !any || (!currentAway() && (step < 0 ? m_current <= 0 : m_current >= int(m_changeStarts.size()) - 1));
+    if (acrossFiles && atEnd && stepFile) {
+        m_landOnLast = step < 0;
+        if (stepFile(step))
+            return;
+        m_landOnLast = false;
+    }
+    if (any)
+        step < 0 ? prevChange() : nextChange();
+}
+
+// With stepFile set the arrows stay enabled at the ends, for Ctrl+click; a
+// plain click there just comes back to the first or last change.
 void DiffView::updateNav()
 {
     const bool any = !m_changeStarts.isEmpty() && showingRows();
     const bool away = any && currentAway();
-    m_prev->setEnabled(any && (m_current > 0 || away));
-    m_next->setEnabled(any && (m_current < int(m_changeStarts.size()) - 1 || away));
+    const bool across = bool(stepFile);
+    m_prev->setEnabled(across || (any && (m_current > 0 || away)));
+    m_next->setEnabled(across || (any && (m_current < int(m_changeStarts.size()) - 1 || away)));
 }
 
 // ---------------------------------------------------------------- editing the right side
@@ -1705,6 +1737,8 @@ void DiffView::setChangeNavigation(bool enabled)
     m_next->setShortcut(enabled ? QKeySequence(QStringLiteral("Alt+Down")) : QKeySequence());
     m_prev->setVisible(enabled);
     m_next->setVisible(enabled);
+    m_prevFile->setEnabled(enabled);
+    m_nextFile->setEnabled(enabled);
 }
 
 int DiffView::rowForLine(bool right, int lineNumber) const

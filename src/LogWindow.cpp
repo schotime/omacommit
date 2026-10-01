@@ -257,6 +257,13 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
 
     m_diff = new DiffView;
     m_diff->onOptionsChanged = [this] { showFileDiff(); };
+    m_diff->stepFile = [this](int step) {
+        QTreeWidgetItem *cur = m_files->currentItem();
+        QTreeWidgetItem *it = cur ? (step < 0 ? m_files->itemAbove(cur) : m_files->itemBelow(cur)) : nullptr;
+        if (it)   // explicitly, or the Ctrl still held would add to the selection
+            m_files->setCurrentItem(it, 0, QItemSelectionModel::ClearAndSelect);
+        return it != nullptr;
+    };
 
     // --- layout: commits over details over files, diff on the right
     auto *commitsPane = new QWidget;

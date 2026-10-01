@@ -124,6 +124,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
 | Ctrl+Enter | Commit |
 | Ctrl+Shift+Enter | Commit & push |
 | Alt+Down / Alt+Up | Next / previous change in the diff |
+| Ctrl+Alt+Down / Ctrl+Alt+Up | Next / previous change, on into the next / previous file (or Ctrl+click ↓ / ↑) |
 | Space | Toggle the selected file |
 | Ctrl+F | Filter files |
 | Ctrl+S | Save edits made in the diff |

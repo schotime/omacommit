@@ -14,6 +14,7 @@
 class ImageCompare;
 class QLabel;
 class QScrollBar;
+class QShortcut;
 class QStackedWidget;
 class QTimer;
 class QToolButton;
@@ -175,6 +176,11 @@ public:
     // Off: no ↑↓ buttons and no Alt+Up/Down -- the resolve window steps
     // through its conflicts instead, with arrows of its own.
     void setChangeNavigation(bool enabled);
+    // Ctrl+click on ↑↓ (or Ctrl+Alt+Up/Down) at the first or last change goes
+    // on to the previous or next file: the window moves its file list by
+    // `step` (±1), false when there is no file that way. The next file then
+    // opens at its first change, the previous one at its last.
+    std::function<bool(int step)> stepFile;
     int rowForLine(bool right, int lineNumber) const;
     void revealRow(int row);
     bool isDirty() const;
@@ -215,6 +221,7 @@ public:
 
     void nextChange();
     void prevChange();
+    void stepChange(int step, bool acrossFiles);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -273,6 +280,8 @@ private:
     QToolButton *m_save;
     QToolButton *m_prev;
     QToolButton *m_next;
+    QShortcut *m_prevFile;
+    QShortcut *m_nextFile;
     QLabel *m_leftCaption;
     QLabel *m_rightCaption;
     QColor m_leftTint, m_rightTint;
@@ -308,6 +317,7 @@ private:
 
     QVector<int> m_changeStarts;
     int m_current = -1;
+    bool m_landOnLast = false;   // the file coming was stepped back into: open at its last change
     int m_removed = 0;
     int m_added = 0;
 };
