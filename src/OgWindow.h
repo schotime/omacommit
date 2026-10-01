@@ -36,7 +36,7 @@ public:
     // Shows the file selected in the file manager, or at least its folder.
     static void showInFileManager(const QString &path);
 
-    // Ctrl+O: a menu of the repos og has recently opened, and a folder chooser.
+    // Ctrl+O: the repos og has recently opened, to search, and a folder chooser.
     void chooseRepo();
     // Shows `root` in this window instead, on the same page, once every page
     // has agreed to close (drafts kept, unsaved edits asked about).

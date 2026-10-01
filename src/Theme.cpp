@@ -335,7 +335,7 @@ QPushButton#tab:hover { color: @fg@; }
 QPushButton#tab[current="true"] { color: @fg@; border-bottom: 2px solid @accent@; }
 QLabel#muted { color: @muted@; }
 QLabel#section { color: @muted@; font-weight: 500; }
-QPlainTextEdit, QLineEdit, QTreeWidget {
+QPlainTextEdit, QLineEdit, QTreeWidget, QListWidget {
     background: @surface@; border: 1px solid @border@;
     selection-background-color: @selbg@; selection-color: @selfg@;
 }
@@ -345,6 +345,11 @@ QLineEdit { padding: 4px 6px; }
 QTreeWidget::item { padding: 3px 2px; }
 QTreeWidget::item:selected { background: @selbg@; color: @selfg@; }
 QTreeWidget::item:hover:!selected { background: @hover@; }
+QDialog#picker { background: @surface@; border: 1px solid @border@; }
+QDialog#picker QListWidget { border: none; }
+QListWidget::item { padding: 5px 8px; }
+QListWidget::item:selected { background: @selbg@; color: @selfg@; }
+QListWidget::item:hover:!selected { background: @hover@; }
 QHeaderView::section {
     background: @bg@; color: @muted@; border: none;
     border-bottom: 1px solid @border@; padding: 4px 6px;

@@ -67,6 +67,7 @@ add_executable(oc
     src/ResolveWindow.cpp
     src/OgWindow.cpp
     src/PageTabs.cpp
+    src/Picker.cpp
 )
 if(WIN32)
     # A GUI-subsystem executable loses stdout/stderr when launched from an

@@ -3,6 +3,7 @@
 #include "LogWindow.h"
 #include "ResolveWindow.h"
 #include "GitRepo.h"
+#include "Picker.h"
 #ifdef OG_PORTAL
 #include "Portal.h"
 #endif
@@ -207,37 +208,39 @@ void OgWindow::closeEvent(QCloseEvent *e)
 
 void OgWindow::chooseRepo()
 {
-    QMenu menu(this);
+    QStringList roots;
+    QVector<PickerItem> items;
     for (const QString &root : recentRepos()) {
         if (QDir::cleanPath(root) == QDir::cleanPath(m_root) || !QFileInfo(root).isDir())
             continue;   // where we are, or gone since
-        QAction *a = menu.addAction(QStringLiteral("%1\t%2").arg(QFileInfo(root).fileName(), shortPath(root)));
-        connect(a, &QAction::triggered, this, [this, root] { openRepo(root); });
+        roots << root;
+        items.push_back({QFileInfo(root).fileName(), shortPath(root)});
     }
-    if (!menu.isEmpty())
-        menu.addSeparator();
-    connect(menu.addAction(tr("Open Repository…")), &QAction::triggered, this, [this] {
-        const QString title = tr("Choose a Git repository");
-        const QString from = QFileInfo(m_root).absolutePath();
-        QString picked;
+    PickerItem open{tr("Open Repository…")};
+    open.always = true;
+    items.push_back(open);
+    const int picked = Picker::choose(this, tr("Search recent repositories"), items);
+    if (picked < 0)
+        return;
+    if (picked < roots.size()) {
+        openRepo(roots.at(picked));
+        return;
+    }
+    const QString title = tr("Choose a Git repository");
+    const QString from = QFileInfo(m_root).absolutePath();
+    QString dir;
 #ifdef OG_PORTAL
-        if (Portal::pickDirectory(title, from, &picked) == Portal::Result::Unavailable)
+    if (Portal::pickDirectory(title, from, &dir) == Portal::Result::Unavailable)
 #endif
-            picked = QFileDialog::getExistingDirectory(this, title, from);
-        if (picked.isEmpty())
-            return;
-        const QString root = GitRepo::findRoot(picked);
-        if (root.isEmpty()) {
-            QMessageBox::warning(this, tr("Open Repository"), tr("%1 is not inside a Git repository.").arg(picked));
-            return;
-        }
-        openRepo(root);
-    });
-    if (QAction *first = menu.actions().value(0))
-        menu.setActiveAction(first);
-    // Near the top of the window, centred, like a command palette.
-    const QSize size = menu.sizeHint();
-    menu.exec(mapToGlobal(QPoint((width() - size.width()) / 2, height() / 8)));
+        dir = QFileDialog::getExistingDirectory(this, title, from);
+    if (dir.isEmpty())
+        return;
+    const QString root = GitRepo::findRoot(dir);
+    if (root.isEmpty()) {
+        QMessageBox::warning(this, tr("Open Repository"), tr("%1 is not inside a Git repository.").arg(dir));
+        return;
+    }
+    openRepo(root);
 }
 
 void OgWindow::openRepo(const QString &root)
