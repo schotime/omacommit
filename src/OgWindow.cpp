@@ -280,6 +280,14 @@ void OgWindow::chooseRepo()
     openRepo(root);
 }
 
+QString OgWindow::lastRepo()
+{
+    for (const QString &root : recentRepos())
+        if (QFileInfo(root).isDir() && GitRepo::findRoot(root) == QDir::cleanPath(root))
+            return root;
+    return {};
+}
+
 void OgWindow::chooseRepo(QWidget *from)
 {
     if (auto *w = qobject_cast<OgWindow *>(from->window()))

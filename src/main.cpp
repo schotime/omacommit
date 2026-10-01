@@ -234,9 +234,13 @@ int main(int argc, char *argv[])
     }
 
     QString root = GitRepo::findRoot(start);
+    // Not in a repository and none named (launched from a menu, cwd = $HOME):
+    // open the last one used. Ctrl+O, or clicking the path, picks another.
+    if (root.isEmpty() && !hasPath)
+        root = OgWindow::lastRepo();
     if (root.isEmpty() && !hasPath) {
-        // Launched from a menu (cwd = $HOME): let the user pick a repo, in the
-        // desktop's file chooser when there is one.
+        // Nothing opened before: let the user pick a repo, in the desktop's
+        // file chooser when there is one.
         const QString title = QObject::tr("Choose a Git repository");
         QString picked;
 #ifdef OG_PORTAL

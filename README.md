@@ -81,8 +81,10 @@ oc commit           # the same thing, spelled out
 oc commit ~/code/app  # a specific repo
 ```
 
-Launched from a menu with no repo, it asks you to pick one in the desktop's file
-chooser (the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal.
+Started outside a repo with none named (from a menu, say), it opens the last
+repo you used; Ctrl+O, or clicking the repo's path, picks another. The first
+time, with none used yet, it asks you to pick one in the desktop's file chooser
+(the XDG portal: Strata on Omarchy), or Qt's own dialog without a portal.
 
 | Subcommand | Alias | What it opens |
 | --- | --- | --- |
