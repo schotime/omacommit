@@ -149,8 +149,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_counter = new QLabel;
 
     m_newBranch = new QLineEdit;
-    m_newBranch->setPlaceholderText(tr("New branch (leave empty to commit to the current one)"));
-    m_newBranch->setToolTip(tr("Create this branch from the current HEAD and commit to it"));
+    // Shares its line with Amend: a short placeholder, the rest in the tooltip.
+    m_newBranch->setPlaceholderText(tr("New branch (optional)"));
+    m_newBranch->setToolTip(tr("Create this branch from the current HEAD and commit to it.\n"
+                               "Leave it empty to commit to the current branch."));
     m_newBranch->setClearButtonEnabled(true);
 
     m_selectAll = new QCheckBox(tr("Files"));
@@ -216,6 +218,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
 
     auto *msgHead = new QHBoxLayout;
     msgHead->addWidget(sectionLabel(tr("Message")));
+    msgHead->addSpacing(6);
+    msgHead->addWidget(m_counter);
     msgHead->addStretch();
     msgHead->addWidget(m_writeBtn);
     if (m_agentMenuBtn)
@@ -225,11 +229,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     l->addWidget(m_message, 2);
 
     auto *msgFoot = new QHBoxLayout;
+    msgFoot->setSpacing(12);
     msgFoot->addWidget(m_amend);
-    msgFoot->addStretch();
-    msgFoot->addWidget(m_counter);
+    msgFoot->addWidget(m_newBranch, 1);
     l->addLayout(msgFoot);
-    l->addWidget(m_newBranch);
     l->addSpacing(4);
 
     auto *filesHead = new QHBoxLayout;
@@ -1349,7 +1352,8 @@ void CommitWindow::updateBranchField()
     const bool amend = m_amend->isChecked();
     m_newBranch->setEnabled(!m_busy && !amend);
     m_newBranch->setToolTip(amend ? tr("Not available while amending")
-                                  : tr("Create this branch from the current HEAD and commit to it"));
+                                  : tr("Create this branch from the current HEAD and commit to it.\n"
+                                       "Leave it empty to commit to the current branch."));
 }
 
 void CommitWindow::onAmendToggled(bool on)
