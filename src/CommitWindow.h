@@ -60,6 +60,10 @@ private:
     void discardUnstaged(const FileEntry &e);
     bool canStash(const FileEntry &e) const;
     void stashFiles(const QVector<FileEntry> &files);
+    QString commitIgnoreFile() const;
+    void loadCommitIgnore();
+    bool isCommitIgnored(const FileEntry &e) const;
+    void setCommitIgnored(const QStringList &paths, bool on);
     void afterIndexChange(const GitResult &r, const QString &failure, const QString &done);
     void onAmendToggled(bool on);
     bool prepareBranch();
@@ -127,6 +131,11 @@ private:
     // While amending, the staged list also holds the last commit's changes;
     // these are the paths the index itself changes on top of HEAD.
     QSet<QString> m_indexChanged;
+
+    // Ignored files: the lines of .git/omacommit-ignore. Those files are
+    // listed in a section of their own and start unticked.
+    QStringList m_ignorePatterns;
+    QSet<QString> m_resetChecks;   // paths whose rows take their default tick on the next refresh
 
     QString m_lastMessage;
     bool m_updatingChecks = false;

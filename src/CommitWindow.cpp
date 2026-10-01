@@ -23,8 +23,10 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
@@ -57,6 +59,27 @@ QLabel *sectionLabel(const QString &text)
     l->setObjectName(QStringLiteral("section"));
     return l;
 }
+
+// A file row you can tick: not a heading, and not ignored.
+bool tickable(const QTreeWidgetItem *it)
+{
+    return it && it->parent() && (it->flags() & Qt::ItemIsUserCheckable);
+}
+
+// A file row with a tick box you can't use -- an ignored one -- is
+// drawn disabled, while staying selectable so its diff can still be seen.
+class FileRowDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        if (index.data(Qt::CheckStateRole).isValid() && !(index.flags() & Qt::ItemIsUserCheckable))
+            option->state &= ~QStyle::State_Enabled;
+    }
+};
 } // namespace
 
 CommitWindow::CommitWindow(const QString &root, QWidget *parent)
@@ -148,6 +171,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     // ticks them all. The diff shows the one clicked last.
     m_files->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_files->viewport()->installEventFilter(this);   // checkbox clicks keep the selection
+    m_files->setItemDelegateForColumn(0, new FileRowDelegate(m_files));
     m_files->header()->setStretchLastSection(false);
     m_files->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_files->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -247,7 +271,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
         if (it->isSelected()) {
             m_updatingChecks = true;
             for (QTreeWidgetItem *s : m_files->selectedItems())
-                if (entryOf(s))
+                if (tickable(s))
                     s->setCheckState(0, it->checkState(0));
             m_updatingChecks = false;
         }
@@ -277,7 +301,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
         m_filter->selectAll();
     });
     new QShortcut(QKeySequence(Qt::Key_Space), m_files, [this] {
-        if (auto *it = m_files->currentItem(); it && entryOf(it))
+        if (auto *it = m_files->currentItem(); tickable(it))
             it->setCheckState(0, it->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);   // the selection follows
     }, Qt::WidgetShortcut);
 
@@ -385,18 +409,27 @@ void CommitWindow::refresh()
         QSignalBlocker block(m_files);
         m_files->clear();
     }
-    QTreeWidgetItem *sections[2] = {nullptr, nullptr};   // staged, changes
-    auto sectionFor = [&](bool staged) {
-        QTreeWidgetItem *&s = sections[staged ? 0 : 1];
+    loadCommitIgnore();
+    enum { StagedSection, ChangesSection, IgnoredSection };
+    QTreeWidgetItem *sections[3] = {nullptr, nullptr, nullptr};
+    auto sectionFor = [&](int kind) {
+        QTreeWidgetItem *&s = sections[kind];
         if (!s) {
             s = new QTreeWidgetItem;
-            s->setText(0, staged ? (amend ? tr("Staged, with the last commit") : tr("Staged")) : tr("Changes"));
+            s->setText(0, kind == StagedSection ? (amend ? tr("Staged, with the last commit") : tr("Staged"))
+                          : kind == ChangesSection ? tr("Changes")
+                                                   : tr("Ignored"));
+            if (kind == IgnoredSection)
+                s->setToolTip(0, tr("Listed in .git/omacommit-ignore: stop ignoring a file to commit it"));
             s->setData(0, IndexRole, -1);
             s->setFlags(Qt::ItemIsEnabled);   // a heading: not selectable, not ticked
             QFont f = s->font(0);
             f.setWeight(QFont::DemiBold);
             s->setFont(0, f);
-            m_files->insertTopLevelItem(staged ? 0 : m_files->topLevelItemCount(), s);
+            int at = 0;   // the sections keep their order whichever comes first
+            for (int k = 0; k < kind; ++k)
+                at += sections[k] ? 1 : 0;
+            m_files->insertTopLevelItem(at, s);
         }
         return s;
     };
@@ -406,8 +439,23 @@ void CommitWindow::refresh()
         auto *it = new QTreeWidgetItem;
         it->setText(0, e.oldPath.isEmpty() ? e.path : e.oldPath + QStringLiteral(" → ") + e.path);
         it->setToolTip(0, it->text(0));
-        it->setText(1, e.statusText());
+        const bool ignored = isCommitIgnored(e);
+        // Both rows of a half-staged file can land in the ignored section.
+        it->setText(1, ignored && e.staged ? tr("%1 (staged)").arg(e.statusText()) : e.statusText());
         it->setData(0, IndexRole, i);
+        if (ignored) {
+            // Its tick box is shown disabled: it is committed only once taken off the list.
+            // (Tree items are user-checkable by default.)
+            it->setFlags(it->flags() & ~Qt::ItemIsUserCheckable);
+            it->setCheckState(0, Qt::Unchecked);
+            it->setToolTip(0, tr("%1\nIgnored: stop ignoring it to commit it").arg(it->text(0)));
+            sectionFor(IgnoredSection)->addChild(it);
+            if (rowKey(e) == currentKey)
+                toSelect = it;
+            else if (e.path == currentPath && !samePath)
+                samePath = it;
+            continue;
+        }
         it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
         // Ticked unless untracked (TortoiseGit's default) -- or when part of the
         // file is staged: then its staged part is what's meant, unless you tick
@@ -416,11 +464,11 @@ void CommitWindow::refresh()
         const QString key = rowKey(e);
         const bool newlyStaged = !e.staged && stagedPaths.contains(e.path)
                               && !known.contains(QStringLiteral("S:") + e.path) && !amend;
-        const bool on = known.contains(key) && !newlyStaged
+        const bool on = known.contains(key) && !newlyStaged && !m_resetChecks.contains(e.path)
                             ? checked.contains(key)
                             : e.staged || (!e.untracked() && !stagedPaths.contains(e.path));
         it->setCheckState(0, on ? Qt::Checked : Qt::Unchecked);
-        sectionFor(e.staged)->addChild(it);
+        sectionFor(e.staged ? StagedSection : ChangesSection)->addChild(it);
         if (key == currentKey)
             toSelect = it;
         else if (e.path == currentPath && !samePath)
@@ -430,6 +478,7 @@ void CommitWindow::refresh()
         if (s)
             s->setText(1, s->childCount() == 1 ? tr("1 file") : tr("%1 files").arg(s->childCount()));
     m_files->expandAll();
+    m_resetChecks.clear();
     m_updatingChecks = false;
 
     applyTheme();
@@ -716,21 +765,37 @@ void CommitWindow::showFileMenu(const QPoint &pos)
         discard = menu.addAction(tr("Discard unstaged changes…"));
         discard->setEnabled(!m_busy && !e.untracked() && !e.conflicted());
     }
-    // Stash acts on every selected row when the clicked one is among them.
-    QVector<FileEntry> toStash;
+    // Stashing and ignoring act on every selected row when the clicked one is among them.
+    QVector<FileEntry> picked;
     if (m_files->itemAt(pos)->isSelected()) {
         for (QTreeWidgetItem *it : fileItems())
-            if (const FileEntry *s = entryOf(it); s && it->isSelected() && !it->isHidden() && canStash(*s))
-                toStash << *s;
-    } else if (canStash(e)) {
-        toStash << e;
+            if (const FileEntry *s = entryOf(it); s && it->isSelected() && !it->isHidden())
+                picked << *s;
+    } else {
+        picked << e;
     }
+    QVector<FileEntry> toStash;
     QSet<QString> stashPaths;
-    for (const FileEntry &s : toStash)
-        stashPaths.insert(s.path);
+    QStringList toIgnore, toUnignore;
+    for (const FileEntry &s : picked) {
+        if (canStash(s)) {
+            toStash << s;
+            stashPaths.insert(s.path);
+        }
+        QStringList &list = isCommitIgnored(s) ? toUnignore : toIgnore;
+        if (!list.contains(s.path))
+            list << s.path;
+    }
     QAction *stash = menu.addAction(stashPaths.size() > 1 ? tr("Stash %1 files…").arg(stashPaths.size())
                                                           : tr("Stash…"));
     stash->setEnabled(!m_busy && !toStash.isEmpty());
+    QAction *ignore = nullptr, *unignore = nullptr;
+    if (!toIgnore.isEmpty())
+        ignore = menu.addAction(toIgnore.size() > 1 ? tr("Ignore %1 files").arg(toIgnore.size())
+                                                    : tr("Ignore"));
+    if (!toUnignore.isEmpty())
+        unignore = menu.addAction(toUnignore.size() > 1 ? tr("Stop ignoring %1 files").arg(toUnignore.size())
+                                                        : tr("Stop ignoring"));
     menu.addSeparator();
     const QString onDisk = QDir(m_repo.root()).filePath(e.path);
     QAction *open = menu.addAction(tr("Open in editor"));
@@ -754,6 +819,10 @@ void CommitWindow::showFileMenu(const QPoint &pos)
         revertFile(e);
     } else if (chosen == stash) {
         stashFiles(toStash);
+    } else if (chosen == ignore) {
+        setCommitIgnored(toIgnore, true);
+    } else if (chosen == unignore) {
+        setCommitIgnored(toUnignore, false);
     } else if (chosen == resolve) {
         // In this window's place; the list is refreshed on coming back.
         OgWindow::go(this, OgWindow::Resolve, e.path);
@@ -986,6 +1055,100 @@ void CommitWindow::stashFiles(const QVector<FileEntry> &files)
     afterIndexChange(m_repo.run(args), tr("Could not stash %1").arg(what), tr("Stashed %1").arg(what));
 }
 
+// Ignored files: ones you keep changed locally but don't mean to commit
+// (TortoiseSVN's ignore-on-commit). Unlike .gitignore they stay listed, in a
+// section of their own, and can't be ticked until taken off the list. It is local to
+// this clone: one path per line, # for comments; a line ending in / takes a
+// folder, and *, ? and [ match as in .gitignore (a pattern without a / goes
+// by file name alone).
+QString CommitWindow::commitIgnoreFile() const
+{
+    const QString dir = m_repo.gitDir();
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/omacommit-ignore");
+}
+
+void CommitWindow::loadCommitIgnore()
+{
+    m_ignorePatterns.clear();
+    QFile f(commitIgnoreFile());
+    if (!f.open(QIODevice::ReadOnly))
+        return;
+    for (const QString &raw : QString::fromUtf8(f.readAll()).split(u'\n')) {
+        const QString line = raw.trimmed();
+        if (!line.isEmpty() && !line.startsWith(u'#'))
+            m_ignorePatterns << line;
+    }
+}
+
+namespace {
+bool ignoreMatches(QString pattern, const QString &path)
+{
+    if (pattern.startsWith(u'/'))
+        pattern.remove(0, 1);
+    if (pattern.endsWith(u'/'))
+        return path.startsWith(pattern);
+    const bool wild = pattern.contains(u'*') || pattern.contains(u'?') || pattern.contains(u'[');
+    if (!wild)
+        return path == pattern;
+    const QString subject = pattern.contains(u'/') ? path : path.section(u'/', -1);
+    return QRegularExpression(QRegularExpression::wildcardToRegularExpression(pattern)).match(subject).hasMatch();
+}
+} // namespace
+
+bool CommitWindow::isCommitIgnored(const FileEntry &e) const
+{
+    for (const QString &p : m_ignorePatterns)
+        if (ignoreMatches(p, e.path) || (!e.oldPath.isEmpty() && ignoreMatches(p, e.oldPath)))
+            return true;
+    return false;
+}
+
+// Adds the paths to the list, or takes them off it. Their rows go back to the
+// tick their new section starts with.
+void CommitWindow::setCommitIgnored(const QStringList &paths, bool on)
+{
+    const QString file = commitIgnoreFile();
+    QFile f(file);
+    QStringList lines;
+    if (f.open(QIODevice::ReadOnly)) {
+        lines = QString::fromUtf8(f.readAll()).split(u'\n');
+        f.close();
+    }
+    while (!lines.isEmpty() && lines.constLast().trimmed().isEmpty())
+        lines.removeLast();
+    if (on) {
+        for (const QString &p : paths)
+            if (!lines.contains(p))
+                lines << p;
+    } else {
+        lines.erase(std::remove_if(lines.begin(), lines.end(), [&](const QString &l) {
+                        QString t = l.trimmed();
+                        if (t.startsWith(u'/'))
+                            t.remove(0, 1);
+                        return paths.contains(t);
+                    }), lines.end());
+    }
+    const QByteArray data = lines.isEmpty() ? QByteArray() : (lines.join(u'\n') + u'\n').toUtf8();
+    if (file.isEmpty() || !f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(data) != data.size()) {
+        showError(tr("Could not update the ignore list"), tr("Could not write %1.").arg(QDir::toNativeSeparators(file)));
+        return;
+    }
+    f.close();
+    for (const QString &p : paths)
+        m_resetChecks.insert(p);
+    const QString what = paths.size() == 1 ? paths.constFirst() : tr("%1 files").arg(paths.size());
+    refresh();
+    // A folder or wildcard line can still take a file that was taken off by name.
+    QStringList still;
+    for (const FileEntry &e : std::as_const(m_entries))
+        if (!on && paths.contains(e.path) && isCommitIgnored(e) && !still.contains(e.path))
+            still << e.path;
+    if (!still.isEmpty())
+        m_status->setText(tr("%1 is still ignored by a pattern in .git/omacommit-ignore").arg(still.join(QStringLiteral(", "))));
+    else
+        m_status->setText(on ? tr("Ignoring %1").arg(what) : tr("No longer ignoring %1").arg(what));
+}
+
 // Asks what to do with unsaved diff edits. Returns false when the caller
 // should not go ahead.
 bool CommitWindow::resolveUnsavedEdits(bool allowCancel)
@@ -1061,15 +1224,16 @@ void CommitWindow::applyFilter()
     updateSelectAllState();   // a filter matching nothing leaves it nothing to toggle
 }
 
+// Ignored files have no tick to toggle.
 void CommitWindow::toggleAll()
 {
     bool anyUnchecked = false;
     for (QTreeWidgetItem *it : fileItems())
-        if (!it->isHidden() && it->checkState(0) != Qt::Checked)
+        if (tickable(it) && !it->isHidden() && it->checkState(0) != Qt::Checked)
             anyUnchecked = true;
     m_updatingChecks = true;
     for (QTreeWidgetItem *it : fileItems())
-        if (!it->isHidden())
+        if (tickable(it) && !it->isHidden())
             it->setCheckState(0, anyUnchecked ? Qt::Checked : Qt::Unchecked);
     m_updatingChecks = false;
     updateSelectAllState();
@@ -1078,18 +1242,20 @@ void CommitWindow::toggleAll()
 
 void CommitWindow::updateSelectAllState()
 {
-    const QVector<QTreeWidgetItem *> rows = fileItems();
-    int checked = 0;
+    int rows = 0, checked = 0;
     bool anyShown = false;
-    for (QTreeWidgetItem *it : rows) {
+    for (QTreeWidgetItem *it : fileItems()) {
+        if (!tickable(it))
+            continue;
+        ++rows;
         if (it->checkState(0) == Qt::Checked)
             ++checked;
         anyShown = anyShown || !it->isHidden();
     }
     QSignalBlocker block(m_selectAll);
     m_selectAll->setCheckState(checked == 0 ? Qt::Unchecked
-                               : checked == rows.size() ? Qt::Checked
-                                                        : Qt::PartiallyChecked);
+                               : checked == rows ? Qt::Checked
+                                                 : Qt::PartiallyChecked);
     // It toggles the rows on show, so with none showing -- nothing changed,
     // or a filter matching nothing -- there is nothing for it to do.
     m_selectAll->setEnabled(!m_busy && anyShown);
@@ -1136,12 +1302,15 @@ void CommitWindow::updateCounts()
     m_counter->setStyleSheet(QStringLiteral("color:%1").arg(
         (subject > 72 ? c.red : subject > 50 ? c.yellow : c.muted).name()));
 
-    const QVector<QTreeWidgetItem *> rows = fileItems();
-    int checked = 0;
-    for (QTreeWidgetItem *it : rows)
+    int rows = 0, checked = 0;   // ignored files aren't on offer
+    for (QTreeWidgetItem *it : fileItems()) {
+        if (!tickable(it))
+            continue;
+        ++rows;
         if (it->checkState(0) == Qt::Checked)
             ++checked;
-    m_fileCount->setText(tr("%1 of %2 selected").arg(checked).arg(rows.size()));
+    }
+    m_fileCount->setText(tr("%1 of %2 selected").arg(checked).arg(rows));
 
     const bool can = !m_busy && !m_writer && !msg.trimmed().isEmpty() && (checked > 0 || m_amend->isChecked());
     m_commitBtn->setEnabled(can);
@@ -1663,7 +1832,7 @@ bool CommitWindow::eventFilter(QObject *watched, QEvent *event)
         auto *me = static_cast<QMouseEvent *>(event);
         QTreeWidgetItem *it = m_files->itemAt(me->position().toPoint());
         const int box = m_files->style()->pixelMetric(QStyle::PM_IndicatorWidth, nullptr, m_files) + 10;
-        const bool onBox = it && entryOf(it) && me->button() == Qt::LeftButton && me->modifiers() == Qt::NoModifier
+        const bool onBox = tickable(it) && me->button() == Qt::LeftButton && me->modifiers() == Qt::NoModifier
                         && me->position().x() < m_files->visualItemRect(it).left() + box;
         if (onBox && it->isSelected() && m_files->selectedItems().size() > 1) {
             if (event->type() == QEvent::MouseButtonRelease)
