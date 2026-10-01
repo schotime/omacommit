@@ -243,6 +243,35 @@ void OgWindow::chooseRepo()
     openRepo(root);
 }
 
+bool OgWindow::chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo)
+{
+    const QVector<BranchRef> branches = repo.branches();
+    QVector<PickerItem> items;
+    for (const BranchRef &b : branches)
+        items.push_back({b.name, b.current ? tr("current · %1").arg(b.when) : b.when});
+    const int picked = Picker::choose(from, tr("Switch to branch"), items);
+    if (picked < 0 || branches.at(picked).current)
+        return false;
+    const QString name = branches.at(picked).localName;
+    if (!switchBranch(from, repo, name))
+        return false;
+    if (switchedTo)
+        *switchedTo = name;
+    return true;
+}
+
+// Uncommitted changes come along when they can; when git won't switch -- they
+// would be overwritten, or a merge is in progress -- nothing changes and its
+// reason is shown.
+bool OgWindow::switchBranch(QWidget *from, const GitRepo &repo, const QString &name)
+{
+    const GitResult r = repo.run({QStringLiteral("switch"), name});
+    if (!r.ok())
+        QMessageBox::warning(from, tr("Could not switch to %1").arg(name),
+                             QString::fromUtf8(r.err + r.out).trimmed().right(1500));
+    return r.ok();
+}
+
 void OgWindow::openRepo(const QString &root)
 {
     if (QDir::cleanPath(root) == QDir::cleanPath(m_root) || !closePages())

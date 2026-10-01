@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QSet>
 #include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
@@ -339,6 +340,10 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
 
     // --- keyboard
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { reload(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this, [this] {
+        if (OgWindow::chooseBranch(this, m_repo))
+            reload();
+    });
     for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
         new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Commit); });
     connect(m_commits, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
@@ -716,12 +721,40 @@ void LogWindow::showCommitMenu(const QPoint &pos)
             OgWindow::go(this, OgWindow::Commit);
         return;
     }
+    // Switching to a branch on this commit: a local one, or a remote one with no
+    // local branch of its name yet (git then creates one that tracks it).
+    const QVector<RefLabel> refs = m_refs.value(c.hash);
+    QSet<QString> local;
+    for (const RefLabel &r : refs)
+        if (r.kind == RefLabel::Branch)
+            local.insert(r.name);
+    QHash<QAction *, QString> switchTo;
+    for (const RefLabel &r : refs) {
+        QString name;
+        if (r.kind == RefLabel::Branch && !r.current)
+            name = r.name;
+        else if (r.kind == RefLabel::Remote && !local.contains(r.name.section(u'/', 1)))
+            name = r.name.section(u'/', 1);
+        if (!name.isEmpty() && !switchTo.values().contains(name))
+            switchTo.insert(menu.addAction(tr("Switch to %1").arg(name)), name);
+    }
+    if (!switchTo.isEmpty())
+        menu.addSeparator();
     QAction *revert = menu.addAction(tr("Revert changes by this commit…"));
     revert->setEnabled(m_repo.operation().isEmpty());
     if (!revert->isEnabled())
         revert->setToolTip(tr("Finish the %1 in progress first").arg(m_repo.operation()));
-    if (menu.exec(m_commits->viewport()->mapToGlobal(pos)) == revert)
+    QAction *chosen = menu.exec(m_commits->viewport()->mapToGlobal(pos));
+    if (chosen && switchTo.contains(chosen))
+        switchBranch(switchTo.value(chosen));
+    else if (chosen == revert)
         revertCommit(c);
+}
+
+void LogWindow::switchBranch(const QString &name)
+{
+    if (OgWindow::switchBranch(this, m_repo, name))
+        reload();
 }
 
 void LogWindow::showFileMenu(const QPoint &pos)

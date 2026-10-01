@@ -73,6 +73,8 @@ private:
     void toggleAll();
     void applyFilter();
     void applyTheme();
+    void updateHeader();
+    void chooseBranch();
     void commit(bool push);
     void startPush();
     void finishAfterSuccess();
@@ -138,6 +140,8 @@ private:
     QStringList m_ignorePatterns;
     QSet<QString> m_resetChecks;   // paths whose rows take their default tick on the next refresh
 
+    QString m_branch;   // empty when detached
+    bool m_merging = false;
     QString m_lastMessage;
     bool m_updatingChecks = false;
     bool m_busy = false;

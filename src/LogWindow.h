@@ -43,6 +43,7 @@ private:
     void showFileDiff();
     void showCommitMenu(const QPoint &pos);
     void revertCommit(const LogCommit &c);
+    void switchBranch(const QString &name);
     void showFileMenu(const QPoint &pos);
     void revertWorkingFile(const FileEntry &f);
     void revertFileChange(const LogCommit &c, const FileEntry &f);

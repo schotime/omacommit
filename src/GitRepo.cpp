@@ -8,6 +8,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryDir>
 
 namespace {
@@ -138,6 +139,42 @@ bool GitRepo::isValidBranchName(const QString &name) const
 GitResult GitRepo::createBranch(const QString &name) const
 {
     return run({QStringLiteral("checkout"), QStringLiteral("-b"), name});
+}
+
+QVector<BranchRef> GitRepo::branches() const
+{
+    const GitResult r = run({QStringLiteral("for-each-ref"), QStringLiteral("--sort=-committerdate"),
+                             QStringLiteral("--format=%(refname)%00%(refname:short)%00%(committerdate:relative)"),
+                             QStringLiteral("refs/heads"), QStringLiteral("refs/remotes")});
+    const QString current = branch();
+    QVector<BranchRef> local, remote;
+    QSet<QString> localNames;
+    for (const QByteArray &line : r.out.split('\n')) {
+        const QList<QByteArray> f = line.split('\0');
+        if (f.size() < 3)
+            continue;
+        const QString full = QString::fromUtf8(f.at(0));
+        BranchRef b;
+        b.name = QString::fromUtf8(f.at(1));
+        b.when = QString::fromUtf8(f.at(2));
+        if (full.startsWith(QLatin1String("refs/heads/"))) {
+            b.localName = b.name;
+            b.current = b.name == current;
+            localNames.insert(b.name);
+            local << b;
+        } else if (!full.endsWith(QLatin1String("/HEAD"))) {   // origin/HEAD just repeats the default branch
+            b.remote = true;
+            b.localName = b.name.section(u'/', 1);
+            remote << b;
+        }
+    }
+    QVector<BranchRef> out = local;
+    for (const BranchRef &b : remote)
+        if (!localNames.contains(b.localName)) {
+            localNames.insert(b.localName);   // the same branch on a second remote: once is enough
+            out << b;
+        }
+    return out;
 }
 
 QString GitRepo::emptyTree() const

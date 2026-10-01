@@ -4,6 +4,7 @@
 #include <QWidget>
 
 class CommitWindow;
+class GitRepo;
 class LogWindow;
 class QStackedWidget;
 class ResolveWindow;
@@ -38,6 +39,10 @@ public:
 
     // Ctrl+O: the repos og has recently opened, to search, and a folder chooser.
     void chooseRepo();
+    // Ctrl+B, or the branch name: pick a branch and switch to it. True when it
+    // switched (then `switchedTo` has its name); git's reason is shown when it won't.
+    static bool chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo = nullptr);
+    static bool switchBranch(QWidget *from, const GitRepo &repo, const QString &name);
     // Shows `root` in this window instead, on the same page, once every page
     // has agreed to close (drafts kept, unsaved edits asked about).
     void openRepo(const QString &root);

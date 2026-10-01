@@ -91,6 +91,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_tabs = new PageTabs(OgWindow::Commit, this);
     m_header = new QLabel;
     m_header->setTextFormat(Qt::RichText);
+    m_header->setToolTip(tr("Switch branch (Ctrl+B)"));
+    connect(m_header, &QLabel::linkActivated, this, &CommitWindow::chooseBranch);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
 
@@ -292,6 +294,7 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Enter")), this, [this] { commit(false); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Return")), this, [this] { commit(true); });
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { refresh(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this, [this] { chooseBranch(); });
     for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
         new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Log); });
     new QShortcut(QKeySequence::Save, this, [this] { saveEdited(); });
@@ -399,10 +402,9 @@ void CommitWindow::refresh()
         if (e.staged && (!amend || m_indexChanged.contains(e.path)))
             stagedPaths.insert(e.path);
 
-    const QString branch = m_repo.branch();
-    m_header->setText(branch.isEmpty() ? tr("on <i>detached HEAD</i>") : tr("to %1").arg(Theme::strong(branch)));
-    if (m_repo.isMerging())
-        m_header->setText(m_header->text() + tr(" <i>(merge)</i>"));
+    m_branch = m_repo.branch();
+    m_merging = m_repo.isMerging();
+    updateHeader();
 
     m_updatingChecks = true;
     {
@@ -1195,8 +1197,31 @@ QColor CommitWindow::statusColor(const FileEntry &e) const
     return c.yellow;
 }
 
+// The branch name is a link to switch branch, drawn as plain text: the link
+// colour is set here, from the theme, rather than the palette's accent.
+void CommitWindow::updateHeader()
+{
+    const QString name = m_branch.isEmpty() ? tr("<i>detached HEAD</i>") : Theme::strong(m_branch);
+    const QString link = QStringLiteral("<a href=\"branch\" style=\"color:%1; text-decoration:none\">%2</a>")
+                             .arg(Theme::instance().colors().foreground.name(), name);
+    m_header->setText((m_branch.isEmpty() ? tr("on %1") : tr("to %1")).arg(link)
+                      + (m_merging ? tr(" <i>(merge)</i>") : QString()));
+}
+
+void CommitWindow::chooseBranch()
+{
+    if (m_busy || !resolveUnsavedEdits())
+        return;
+    QString name;
+    if (!OgWindow::chooseBranch(this, m_repo, &name))
+        return;
+    refresh();
+    m_status->setText(tr("Switched to %1").arg(name));
+}
+
 void CommitWindow::applyTheme()
 {
+    updateHeader();
     m_diff->applyTheme();
     m_message->applyTheme();
     m_updatingChecks = true;

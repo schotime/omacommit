@@ -33,6 +33,16 @@ struct LogCommit {
     QString subject;
 };
 
+// A branch you could switch to: a local one, or a remote one with no local
+// branch of its name (switching creates one that tracks it).
+struct BranchRef {
+    QString name;          // as listed: "main", or "origin/feature"
+    QString localName;     // what `git switch` takes: "main", "feature"
+    bool remote = false;
+    bool current = false;
+    QString when;          // its last commit, relative ("3 days ago")
+};
+
 struct RefLabel {
     enum Kind { Head, Branch, Remote, Tag };
     QString name;
@@ -91,6 +101,7 @@ public:
     bool branchExists(const QString &name) const;
     bool isValidBranchName(const QString &name) const;
     GitResult createBranch(const QString &name) const;
+    QVector<BranchRef> branches() const;   // most recently committed to first
 
     QVector<FileEntry> status() const;
     // The commit window's two lists. `base` is what the commit builds on:
