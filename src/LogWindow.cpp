@@ -208,6 +208,8 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     m_header->setTextFormat(Qt::RichText);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
+    m_repoPath->setToolTip(tr("%1\nOpen another repository (Ctrl+O)").arg(QDir::toNativeSeparators(root)));
+    m_repoPath->onClick = [this] { OgWindow::chooseRepo(this); };
     m_allBranches = new QCheckBox(tr("All branches"));
 
     m_allBranches->setChecked(true);

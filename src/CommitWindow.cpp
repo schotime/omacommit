@@ -95,6 +95,8 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     connect(m_header, &QLabel::linkActivated, this, &CommitWindow::chooseBranch);
     m_repoPath = new ElidedLabel(root);
     m_repoPath->setObjectName(QStringLiteral("muted"));
+    m_repoPath->setToolTip(tr("%1\nOpen another repository (Ctrl+O)").arg(QDir::toNativeSeparators(root)));
+    m_repoPath->onClick = [this] { OgWindow::chooseRepo(this); };
 
     // Restore the last selection when it is installed; otherwise use Omarchy's
     // default (or the first agent on PATH).

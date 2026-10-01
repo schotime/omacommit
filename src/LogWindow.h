@@ -9,6 +9,7 @@
 class QSplitter;
 
 class DiffView;
+class ElidedLabel;
 class QCheckBox;
 class QLabel;
 class QPlainTextEdit;
@@ -56,7 +57,7 @@ private:
 
     GitRepo m_repo;
     QLabel *m_header;
-    QLabel *m_repoPath;
+    ElidedLabel *m_repoPath;
     QCheckBox *m_allBranches;
     PageTabs *m_tabs;
     bool m_shownBefore = false;

@@ -280,6 +280,12 @@ void OgWindow::chooseRepo()
     openRepo(root);
 }
 
+void OgWindow::chooseRepo(QWidget *from)
+{
+    if (auto *w = qobject_cast<OgWindow *>(from->window()))
+        w->chooseRepo();
+}
+
 bool OgWindow::chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo)
 {
     const QVector<BranchRef> branches = repo.branches();

@@ -39,6 +39,7 @@ public:
 
     // Ctrl+O: the repos og has recently opened, to search, and a folder chooser.
     void chooseRepo();
+    static void chooseRepo(QWidget *from);   // from a page: its window's, as Ctrl+O there
     // Ctrl+B, or the branch name: pick a branch and switch to it. True when it
     // switched (then `switchedTo` has its name); git's reason is shown when it won't.
     static bool chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo = nullptr);

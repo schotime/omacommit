@@ -10,6 +10,7 @@
 
 #include <memory>
 
+class ElidedLabel;
 class MessageEdit;
 class PageTabs;
 class QCheckBox;
@@ -93,7 +94,7 @@ private:
     bool m_sized = false;
     PageTabs *m_tabs;
     QLabel *m_header;
-    QLabel *m_repoPath;
+    ElidedLabel *m_repoPath;
     QToolButton *m_historyBtn;
     QToolButton *m_writeBtn;
     QToolButton *m_agentMenuBtn = nullptr;
