@@ -12,6 +12,8 @@ class MessageEdit : public QPlainTextEdit {
 public:
     explicit MessageEdit(QWidget *parent = nullptr);
     void applyTheme();
+    static constexpr int SummaryColumn = 50;   // the summary turns yellow past this
+    static constexpr int GuideColumn = 72;     // where the dashed ruler is drawn
 
 protected:
     void paintEvent(QPaintEvent *e) override;

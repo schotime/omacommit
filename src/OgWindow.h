@@ -26,9 +26,9 @@ public:
     // From a page: back to the page og was started on, or, on that page,
     // close the window. Esc, and a commit that leaves nothing to do.
     static void back(QWidget *from);
-    // The left pane's width when a page first opens in a window `total` wide:
-    // room for a 50-column summary line in the message box, no more however
-    // wide the window, so the rest goes to the diff.
+    // The left pane's width in a window `total` wide: the message box up to
+    // its dashed ruler, no more however wide the window, so the rest goes to
+    // the diff -- or a share of a window too narrow for a side-by-side diff.
     static int sidebarWidth(int total);
     // Opens a file for editing: Omarchy's chosen editor when there is one (its
     // default for text is a terminal app, which a plain desktop open can't
@@ -49,6 +49,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
 
 private:
     QWidget *page(Page p) const;
@@ -64,4 +65,5 @@ private:
     QPointer<ResolveWindow> m_resolve;
     Page m_home = Commit;      // the page og was started on
     Page m_current = Commit;
+    bool m_fitPending = false;   // a divider fit is queued for after the layout settles
 };

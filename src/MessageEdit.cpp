@@ -24,11 +24,12 @@ protected:
         errFmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
         errFmt.setUnderlineColor(error);
 
+        constexpr int summary = MessageEdit::SummaryColumn, wrap = MessageEdit::GuideColumn;
         if (n == 0) {
-            if (text.size() > 50)
-                setFormat(50, qMin<int>(text.size(), 72) - 50, warnFmt);
-            if (text.size() > 72)
-                setFormat(72, text.size() - 72, errFmt);
+            if (text.size() > summary)
+                setFormat(summary, qMin<int>(text.size(), wrap) - summary, warnFmt);
+            if (text.size() > wrap)
+                setFormat(wrap, text.size() - wrap, errFmt);
         } else if (n == 1) {
             if (!text.trimmed().isEmpty()) {   // line 2 should be blank
                 QTextCharFormat f;
@@ -36,8 +37,8 @@ protected:
                 f.setUnderlineColor(error);
                 setFormat(0, text.size(), f);
             }
-        } else if (text.size() > 72) {
-            setFormat(72, text.size() - 72, warnFmt);
+        } else if (text.size() > wrap) {
+            setFormat(wrap, text.size() - wrap, warnFmt);
         }
     }
 };
@@ -66,7 +67,7 @@ void MessageEdit::paintEvent(QPaintEvent *e)
     QPlainTextEdit::paintEvent(e);
     QPainter p(viewport());
     const qreal x = contentOffset().x() + document()->documentMargin()
-        + fontMetrics().horizontalAdvance(QString(72, QLatin1Char('m')));
+        + fontMetrics().horizontalAdvance(QString(GuideColumn, QLatin1Char('m')));
     p.setPen(QPen(m_guide, 1, Qt::DashLine));
     p.drawLine(QPointF(x, 0), QPointF(x, viewport()->height()));
 }

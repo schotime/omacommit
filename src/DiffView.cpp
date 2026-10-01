@@ -1863,14 +1863,27 @@ void DiffView::updateMode()
     activeScrollBar()->setValue(inl ? m_rowToInline.value(topRow, 0) : topRow);
 }
 
+namespace {
+constexpr int SplitColumns = 60;    // fewer characters a side than this is narrow
+constexpr int SplitHysteresis = 4;  // ...and once narrow, it takes this many more to stop
+constexpr int SidePadding = 8;
+} // namespace
+
+int DiffView::minSplitWidth(const QFontMetrics &code)
+{
+    // The right pane's gutter: a few chips and four digits of line number.
+    const int gutter = 2 * DiffPane::ChipStep + code.horizontalAdvance(u'9') * 4 + 18;
+    return 2 * (SplitColumns * code.horizontalAdvance(u'm') + gutter + SidePadding) + 2;
+}
+
 // Narrow means fewer than ~60 characters per side. The band between 60 and
 // 64 keeps it from flickering while a divider is dragged across the line.
 void DiffView::updateNarrow()
 {
     const int charW = qMax(1, m_right->fontMetrics().horizontalAdvance(u'm'));
-    const int side = m_stack->width() / 2 - m_right->gutterWidth() - 8;
+    const int side = m_stack->width() / 2 - m_right->gutterWidth() - SidePadding;
     const int columns = side / charW;
-    const bool narrow = m_narrow ? columns < 64 : columns < 60;
+    const bool narrow = m_narrow ? columns < SplitColumns + SplitHysteresis : columns < SplitColumns;
     if (!narrow)
         m_forceSplit = false;
     m_narrow = narrow;

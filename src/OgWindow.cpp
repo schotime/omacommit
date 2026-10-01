@@ -1,5 +1,7 @@
 #include "OgWindow.h"
 #include "CommitWindow.h"
+#include "DiffView.h"
+#include "MessageEdit.h"
 #include "LogWindow.h"
 #include "ResolveWindow.h"
 #include "GitRepo.h"
@@ -17,6 +19,8 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QTimer>
+#include <QResizeEvent>
 #include <QScrollBar>
 #include <QSettings>
 #include <QShortcut>
@@ -105,10 +109,21 @@ int OgWindow::sidebarWidth(int total)
     // gets the code font), so it is right on any page.
     QPlainTextEdit probe;
     probe.ensurePolished();
-    const int want = probe.fontMetrics().averageCharWidth() * 50 + 2 * int(probe.document()->documentMargin())
-                   + 2 * probe.frameWidth() + probe.verticalScrollBar()->sizeHint().width()
-                   + 28;   // + the panel's margins
-    return qBound(int(total * 0.25), want, int(total * 0.45));
+    const QFontMetrics fm = probe.fontMetrics();
+    // The message box `columns` wide, measured as its ruler is placed, with
+    // room for a scrollbar.
+    const auto boxFor = [&](int columns) {
+        return fm.horizontalAdvance(QString(columns, u'm')) + 2 * int(probe.document()->documentMargin()) + 1
+             + 2 * probe.frameWidth() + probe.verticalScrollBar()->sizeHint().width()
+             + 28;   // + the panel's margins
+    };
+    // Up to the dashed ruler (the body's wrap column) when the rest still shows
+    // the diff side by side. Otherwise the diff is inline anyway: room for a
+    // summary line, within a share of the window.
+    const int ruler = boxFor(MessageEdit::GuideColumn);
+    if (total - ruler - 1 >= DiffView::minSplitWidth(fm))
+        return ruler;
+    return qBound(int(total * 0.25), boxFor(MessageEdit::SummaryColumn), int(total * 0.45));
 }
 
 void OgWindow::openInEditor(const QString &path)
@@ -196,6 +211,28 @@ bool OgWindow::closePages()
         }
     }
     return true;
+}
+
+// Resizing the window -- a quarter of the screen to all of it and back -- sets
+// the divider afresh for the new width: the message box up to its ruler once the diff
+// has room for two sides, a share of the window below that. It is done once the
+// layout has settled, from the splitter's actual width: a window that opens
+// straight at full size gets its first size before its pages are laid out, and
+// a divider set then would be scaled up with the rest.
+void OgWindow::resizeEvent(QResizeEvent *e)
+{
+    QWidget::resizeEvent(e);
+    if (e->oldSize().isValid() && e->oldSize().width() == e->size().width())
+        return;
+    if (m_fitPending)
+        return;
+    m_fitPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_fitPending = false;
+        QWidget *current = m_stack->currentWidget();
+        if (QSplitter *s = pageSplit(current); s && s->isVisible() && s->width() > 0)
+            setLeftWidth(current, sidebarWidth(s->width()));
+    });
 }
 
 void OgWindow::closeEvent(QCloseEvent *e)

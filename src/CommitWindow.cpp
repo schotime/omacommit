@@ -111,11 +111,10 @@ CommitWindow::CommitWindow(const QString &root, QWidget *parent)
     m_writeBtn = new QToolButton;
     m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setVisible(!m_agents.isEmpty());
-    // The selected agent and the running state change the button text. Keep
-    // its width stable so starting/stopping a writer cannot resize the split.
-    int writeWidth = m_writeBtn->fontMetrics().horizontalAdvance(tr("■ Stop"));
-    for (const Agent &agent : m_agents)
-        writeWidth = qMax(writeWidth, m_writeBtn->fontMetrics().horizontalAdvance(tr("✨ Write · %1").arg(agent.name)));
+    // The running state changes the button text. Keep its width stable so
+    // starting/stopping a writer cannot resize the split.
+    const int writeWidth = qMax(m_writeBtn->fontMetrics().horizontalAdvance(tr("■ Stop")),
+                                m_writeBtn->fontMetrics().horizontalAdvance(tr("✨ Write")));
     m_writeBtn->setMinimumWidth(writeWidth + 24);   // tool-button padding and border
     if (m_agents.size() > 1) {
         auto *menu = new QMenu(m_writeBtn);
@@ -1601,7 +1600,9 @@ void CommitWindow::updateWriteButton()
             m_agentMenuBtn->setEnabled(false);
         return;
     }
-    m_writeBtn->setText(tr("✨ Write · %1").arg(m_agent.name));
+    // The agent's name is in the tooltips and ticked in the picker, not on the
+    // button: the heading row has to fit the narrowest sidebar.
+    m_writeBtn->setText(tr("✨ Write"));
     m_writeBtn->setEnabled(!m_busy && m_agent.usable());
     if (m_agentMenuBtn) {
         m_agentMenuBtn->setEnabled(!m_busy);

@@ -68,6 +68,7 @@ public:
     const Line &lineAt(int i) const { return m_lines.at(i); }
 
     int gutterWidth() const;
+    static constexpr int ChipStep = 18;
     void paintGutter(QPaintEvent *e);
     void gutterMouse(QMouseEvent *e);   // the gutter's mouse, moves and presses
 
@@ -96,7 +97,6 @@ private:
     void paintGroups(QPainter &p, const QRect &area);
     const Group *groupAt(int line) const;
     int chipWidth() const { return int(m_chips.size()) * ChipStep; }
-    static constexpr int ChipStep = 18;
     int lineAtY(int y) const;
     QVector<int> offered(int line) const;   // the chips offered on a line
     void hover(int line, int chip, bool block);
@@ -131,6 +131,9 @@ public:
     enum class Take { Block, Line, LeftBeforeRight, WholeFile };
 
     explicit DiffView(QWidget *parent = nullptr);
+    // About the narrowest the view can be and still show two sides rather than
+    // falling back to inline, for text in `code` (the editors' font).
+    static int minSplitWidth(const QFontMetrics &code);
 
     // Set by the owner. Edits -- typed into the right pane or taken from the
     // left -- live in a buffer here until saved; nothing touches the file
