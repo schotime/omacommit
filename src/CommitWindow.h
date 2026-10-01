@@ -66,6 +66,7 @@ private:
     void setCommitIgnored(const QStringList &paths, bool on);
     void afterIndexChange(const GitResult &r, const QString &failure, const QString &done);
     void onAmendToggled(bool on);
+    void updateBranchField();
     bool prepareBranch();
     void updateCounts();
     void updateSelectAllState();

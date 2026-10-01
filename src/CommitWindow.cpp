@@ -1317,6 +1317,16 @@ void CommitWindow::updateCounts()
     m_pushBtn->setEnabled(can);
 }
 
+// Amending rewrites the commit HEAD already points at, which is not something
+// you can also redirect onto a branch that does not exist yet.
+void CommitWindow::updateBranchField()
+{
+    const bool amend = m_amend->isChecked();
+    m_newBranch->setEnabled(!m_busy && !amend);
+    m_newBranch->setToolTip(amend ? tr("Not available while amending")
+                                  : tr("Create this branch from the current HEAD and commit to it"));
+}
+
 void CommitWindow::onAmendToggled(bool on)
 {
     // The diff's left side switches between HEAD and its parent, which unsaved
@@ -1333,11 +1343,7 @@ void CommitWindow::onAmendToggled(bool on)
     } else if (m_message->toPlainText().trimmed() == m_lastMessage) {
         m_message->clear();
     }
-    // Amending rewrites the commit HEAD already points at, which is not
-    // something you can also redirect onto a branch that does not exist yet.
-    m_newBranch->setEnabled(!on);
-    m_newBranch->setToolTip(on ? tr("Not available while amending")
-                               : tr("Create this branch from the current HEAD and commit to it"));
+    updateBranchField();
     if (on)
         m_newBranch->clear();
     refresh();   // the last commit's files join or leave the list
@@ -1443,6 +1449,7 @@ void CommitWindow::commit(bool push)
             QSignalBlocker block(m_amend);
             m_amend->setChecked(false);
         }
+        updateBranchField();
         m_message->clear();
         m_newBranch->clear();
         if (push) {
@@ -1520,7 +1527,7 @@ void CommitWindow::setBusy(bool busy, const QString &message)
     m_message->setEnabled(!busy);
     m_files->setEnabled(!busy);
     m_amend->setEnabled(!busy);
-    m_newBranch->setEnabled(!busy && !m_amend->isChecked());
+    updateBranchField();
     updateSelectAllState();
     m_historyBtn->setEnabled(!busy);
     updateWriteButton();
