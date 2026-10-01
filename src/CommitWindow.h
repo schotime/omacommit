@@ -58,6 +58,8 @@ private:
     bool canRevert(const FileEntry &e) const;
     void revertFile(const FileEntry &e);
     void discardUnstaged(const FileEntry &e);
+    bool canStash(const FileEntry &e) const;
+    void stashFiles(const QVector<FileEntry> &files);
     void afterIndexChange(const GitResult &r, const QString &failure, const QString &done);
     void onAmendToggled(bool on);
     bool prepareBranch();

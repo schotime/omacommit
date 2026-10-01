@@ -16,6 +16,7 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -715,6 +716,21 @@ void CommitWindow::showFileMenu(const QPoint &pos)
         discard = menu.addAction(tr("Discard unstaged changes…"));
         discard->setEnabled(!m_busy && !e.untracked() && !e.conflicted());
     }
+    // Stash acts on every selected row when the clicked one is among them.
+    QVector<FileEntry> toStash;
+    if (m_files->itemAt(pos)->isSelected()) {
+        for (QTreeWidgetItem *it : fileItems())
+            if (const FileEntry *s = entryOf(it); s && it->isSelected() && !it->isHidden() && canStash(*s))
+                toStash << *s;
+    } else if (canStash(e)) {
+        toStash << e;
+    }
+    QSet<QString> stashPaths;
+    for (const FileEntry &s : toStash)
+        stashPaths.insert(s.path);
+    QAction *stash = menu.addAction(stashPaths.size() > 1 ? tr("Stash %1 files…").arg(stashPaths.size())
+                                                          : tr("Stash…"));
+    stash->setEnabled(!m_busy && !toStash.isEmpty());
     menu.addSeparator();
     const QString onDisk = QDir(m_repo.root()).filePath(e.path);
     QAction *open = menu.addAction(tr("Open in editor"));
@@ -736,6 +752,8 @@ void CommitWindow::showFileMenu(const QPoint &pos)
         discardUnstaged(e);
     } else if (chosen == revert) {
         revertFile(e);
+    } else if (chosen == stash) {
+        stashFiles(toStash);
     } else if (chosen == resolve) {
         // In this window's place; the list is refreshed on coming back.
         OgWindow::go(this, OgWindow::Resolve, e.path);
@@ -916,6 +934,56 @@ void CommitWindow::discardUnstaged(const FileEntry &e)
     if (r.ok() && editing)
         m_diff->discard();
     afterIndexChange(r, tr("Could not discard changes to %1").arg(e.path), tr("Discarded changes to %1").arg(e.path));
+}
+
+// A conflict can't be stashed, and while amending a staged row only in the
+// last commit has nothing pending to stash.
+bool CommitWindow::canStash(const FileEntry &e) const
+{
+    return !e.conflicted() && (!e.staged || canUnstage(e));
+}
+
+// Stash just these files -- staged and unstaged changes alike, as git stashes
+// a path whole -- leaving everything else as it is.
+void CommitWindow::stashFiles(const QVector<FileEntry> &files)
+{
+    if (m_busy || files.isEmpty())
+        return;
+    QStringList paths;
+    QSet<QString> named;   // a half-staged file has a row in each section
+    bool untracked = false;
+    for (const FileEntry &e : files) {
+        if (!canStash(e))
+            continue;
+        paths << e.path;
+        named.insert(e.path);
+        if (!e.oldPath.isEmpty() && e.index == u'R')
+            paths << e.oldPath;   // a rename: its old name's deletion goes with it
+        untracked = untracked || e.untracked();
+    }
+    paths.removeDuplicates();
+    if (paths.isEmpty())
+        return;
+    if (paths.contains(m_diffPath) && !resolveUnsavedEdits())
+        return;
+
+    const QString what = named.size() == 1 ? *named.cbegin() : tr("%1 files").arg(named.size());
+    QInputDialog dlg(this);
+    dlg.setWindowTitle(tr("Stash %1").arg(what));
+    dlg.setLabelText(tr("Stash message (optional):"));
+    dlg.setOkButtonText(tr("Stash"));
+    dlg.resize(420, dlg.height());
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    // Literal pathspecs: a name with * or ? in it must not stash other files.
+    QStringList args{QStringLiteral("--literal-pathspecs"), QStringLiteral("stash"), QStringLiteral("push")};
+    if (untracked)
+        args << QStringLiteral("--include-untracked");
+    if (const QString msg = dlg.textValue().trimmed(); !msg.isEmpty())
+        args << QStringLiteral("-m") << msg;
+    args << QStringLiteral("--") << paths;
+    afterIndexChange(m_repo.run(args), tr("Could not stash %1").arg(what), tr("Stashed %1").arg(what));
 }
 
 // Asks what to do with unsaved diff edits. Returns false when the caller
