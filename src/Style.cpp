@@ -1,12 +1,59 @@
 #include "Style.h"
 #include "Theme.h"
 
+#include <QIconEngine>
 #include <QPainter>
 #include <QPainterPath>
 #include <QStyleFactory>
 #include <QStyleOption>
 
 Style::Style() : QProxyStyle(QStyleFactory::create(QStringLiteral("Fusion"))) {}
+
+namespace {
+// Painted when drawn, so it follows a theme switch without being set again.
+class ClearIconEngine : public QIconEngine {
+public:
+    QIconEngine *clone() const override { return new ClearIconEngine; }
+
+    void paint(QPainter *p, const QRect &rect, QIcon::Mode mode, QIcon::State) override
+    {
+        const ThemeColors &c = Theme::instance().colors();
+        const QColor color = mode == QIcon::Disabled ? c.border
+                           : mode == QIcon::Active || mode == QIcon::Selected ? c.foreground
+                                                                              : c.muted;
+        const qreal s = qMin(rect.width(), rect.height()) * 0.36;   // half the ✕'s span
+        const QPointF mid = QRectF(rect).center();
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        p->setPen(QPen(color, qMax<qreal>(1.5, s / 3.5), Qt::SolidLine, Qt::RoundCap));
+        p->drawLine(mid + QPointF(-s, -s), mid + QPointF(s, s));
+        p->drawLine(mid + QPointF(-s, s), mid + QPointF(s, -s));
+        p->restore();
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return scaledPixmap(size, mode, state, 1.0);
+    }
+
+    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State state, qreal scale) override
+    {
+        QPixmap pm(size * scale);
+        pm.setDevicePixelRatio(scale);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        paint(&p, QRect(QPoint(), size), mode, state);
+        return pm;
+    }
+};
+} // namespace
+
+QIcon Style::standardIcon(StandardPixmap sp, const QStyleOption *opt, const QWidget *w) const
+{
+    if (sp == SP_LineEditClearButton)
+        return QIcon(new ClearIconEngine);
+    return QProxyStyle::standardIcon(sp, opt, w);
+}
 
 int Style::pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const
 {

@@ -10,4 +10,7 @@ public:
     Style();
     void drawPrimitive(PrimitiveElement pe, const QStyleOption *opt, QPainter *p, const QWidget *w) const override;
     int pixelMetric(PixelMetric m, const QStyleOption *opt = nullptr, const QWidget *w = nullptr) const override;
+    // A line edit's clear button as a plain ✕ in the theme's colours, rather
+    // than the icon theme's (often a red circle, which reads as an error).
+    QIcon standardIcon(StandardPixmap sp, const QStyleOption *opt = nullptr, const QWidget *w = nullptr) const override;
 };
