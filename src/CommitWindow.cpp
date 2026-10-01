@@ -1651,7 +1651,7 @@ QString CommitWindow::messagePrompt() const
         prompt += QStringLiteral("\nThe author's draft, whose intent to keep:\n") + draft + u'\n';
     if (m_repo.hasHead()) {
         const QString recent = QString::fromUtf8(
-            m_repo.run({QStringLiteral("log"), QStringLiteral("-12"), QStringLiteral("--format=- %s")}).out).trimmed();
+            m_repo.run({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-12"), QStringLiteral("--format=- %s")}).out).trimmed();
         if (!recent.isEmpty())
             prompt += QStringLiteral("\nRecent commit messages in this repository:\n") + recent + u'\n';
     }

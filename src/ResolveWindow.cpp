@@ -431,7 +431,7 @@ void ResolveWindow::describeSides()
             n = out({QStringLiteral("rev-parse"), QStringLiteral("--short"), rev});
         return n.remove(QStringLiteral("remotes/"));
     };
-    auto describe = [&](const QString &rev) { return out({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%h %s"), rev}); };
+    auto describe = [&](const QString &rev) { return out({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-1"), QStringLiteral("--format=%h %s"), rev}); };
     const QString branch = m_repo.branch();
     const QString head = branch.isEmpty() ? tr("HEAD") : tr("HEAD (%1)").arg(branch);
 

@@ -115,7 +115,7 @@ bool GitRepo::isMerging() const
 
 QString GitRepo::lastCommitMessage() const
 {
-    return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%B")}).out).trimmed();
+    return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-1"), QStringLiteral("--format=%B")}).out).trimmed();
 }
 
 bool GitRepo::branchExists(const QString &name) const
@@ -400,8 +400,11 @@ QVector<LogCommit> GitRepo::log(int skip, int count, bool allRefs) const
     QVector<LogCommit> out;
     if (!hasHead())
         return out;
-    // Unit and record separators can't appear in any of these fields.
-    QStringList args{QStringLiteral("log"), QStringLiteral("--topo-order"), QStringLiteral("--no-color"),
+    // Unit and record separators can't appear in any of these fields. (Every
+    // log call says --no-show-signature: log.showSignature would otherwise put
+    // GPG/SSH verification text in among the formatted output.)
+    QStringList args{QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("--topo-order"),
+                     QStringLiteral("--no-color"),
                      QStringLiteral("--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1e"),
                      QStringLiteral("--skip=%1").arg(skip), QStringLiteral("-n"), QString::number(count)};
     if (allRefs)
@@ -474,7 +477,7 @@ QHash<QString, QVector<RefLabel>> GitRepo::refsByCommit() const
 
 QString GitRepo::commitMessage(const QString &hash) const
 {
-    return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%B"), hash}).out)
+    return QString::fromUtf8(run({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-1"), QStringLiteral("--format=%B"), hash}).out)
         .trimmed();
 }
 
