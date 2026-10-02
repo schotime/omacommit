@@ -270,7 +270,7 @@ float/size window rule (the rule syntax depends on your Hyprland version).
   folder with the file selected. Both are in the log's file list too, always
   for the file as it is now.
 - **Commit & Push** sets the upstream (`-u origin <branch>`) on a branch's first push.
-- The window closes by itself when the working tree ends up clean.
+- The window stays open after committing or committing and pushing, even when the working tree is clean.
 - Recent messages (last 25) live under **Recent ▾**, and unsent drafts are
   saved per repo.
 

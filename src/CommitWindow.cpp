@@ -1450,13 +1450,7 @@ void CommitWindow::startPush()
 
 void CommitWindow::finishAfterSuccess()
 {
-    refresh([this] {
-        if (m_entries.isEmpty())
-            QTimer::singleShot(700, this, [this] {
-                if (!m_busy && !m_refreshing && m_entries.isEmpty())
-                    OgWindow::back(this);
-            });
-    });
+    refresh();
 }
 
 void CommitWindow::setBusy(bool busy, const QString &message)
