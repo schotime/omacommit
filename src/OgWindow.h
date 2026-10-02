@@ -19,6 +19,7 @@ public:
     enum Page { Commit, Log, Resolve };
 
     explicit OgWindow(const QString &root, QWidget *parent = nullptr);
+    void restoreWindowGeometry();
 
     // Shows `page` (created the first time); `file` picks the file to resolve.
     void go(Page page, const QString &file = QString());

@@ -293,6 +293,7 @@ int main(int argc, char *argv[])
         window.go(command == QStringLiteral("log") ? OgWindow::Log : OgWindow::Commit);
         window.resize(1400, 860);
     }
+    window.restoreWindowGeometry();   // saved geometry overrides first-run defaults
     window.show();
     return app.exec();
 }

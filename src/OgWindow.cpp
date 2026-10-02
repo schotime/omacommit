@@ -79,6 +79,13 @@ QWidget *OgWindow::page(Page p) const
     return nullptr;
 }
 
+void OgWindow::restoreWindowGeometry()
+{
+    const QByteArray geometry = QSettings().value(QStringLiteral("window/geometry")).toByteArray();
+    if (!geometry.isEmpty())
+        restoreGeometry(geometry);   // Qt also handles maximisation and off-screen positions
+}
+
 void OgWindow::go(Page p, const QString &file)
 {
     QWidget *w = page(p);
@@ -242,9 +249,11 @@ void OgWindow::closeEvent(QCloseEvent *e)
         e->ignore();
         return;
     }
-    if (closePages())
+    const QByteArray geometry = saveGeometry();
+    if (closePages()) {
+        QSettings().setValue(QStringLiteral("window/geometry"), geometry);
         e->accept();
-    else
+    } else
         e->ignore();
 }
 

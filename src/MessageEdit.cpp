@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <QSyntaxHighlighter>
 #include <QTextBlock>
+#include <QTextOption>
 
 class MessageHighlighter : public QSyntaxHighlighter {
 public:
@@ -45,7 +46,8 @@ protected:
 
 MessageEdit::MessageEdit(QWidget *parent) : QPlainTextEdit(parent)
 {
-    setLineWrapMode(QPlainTextEdit::NoWrap);
+    setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     setTabChangesFocus(true);
     setPlaceholderText(tr("Summary on the first line, a blank line, then the details"));
     m_hl = new MessageHighlighter(document());
