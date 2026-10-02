@@ -2,9 +2,11 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <atomic>
 
 class QProcess;
 
@@ -73,6 +75,28 @@ struct GitResult {
     bool ok() const { return exitCode == 0; }
 };
 
+// Value-only data for the commit page. Loading it performs blocking I/O;
+// callers decide which worker to use and when the result is still current.
+struct CommitSnapshot {
+    QString base, branch, lastMessage, preparedMessage;
+    bool merging = false;
+    QVector<FileEntry> entries;
+    QSet<QString> indexChanged;   // index versus HEAD, not the amend base
+    QStringList ignorePatterns;
+    QString gitDirectory;
+};
+
+struct CommitOutcome {
+    GitResult result;
+    QString hash;
+};
+
+struct ResolveSnapshot {
+    QString operation, branch, other, onto, replaying, picked, reverted;
+    int replayed = 0;
+    bool conflicts = false;
+};
+
 // Thin wrapper around the git CLI. Using the real git binary (rather than
 // libgit2) means hooks, GPG/SSH signing, credential helpers and every config
 // option behave exactly as they do in the terminal.
@@ -90,7 +114,7 @@ public:
 
     void configure(QProcess &proc, const QString &indexFile = QString()) const;
     GitResult run(const QStringList &args, const QByteArray &stdinData = {}, int timeoutMs = 30000,
-                  const QString &indexFile = QString()) const;
+                  const QString &indexFile = QString(), bool noEditor = false) const;
 
     QString branch() const;          // empty when detached
     QString upstream() const;        // empty when none
@@ -104,6 +128,7 @@ public:
     QVector<BranchRef> branches() const;   // most recently committed to first
 
     QVector<FileEntry> status() const;
+    CommitSnapshot commitSnapshot(bool amend, bool includePreparedMessage = false) const;
     // The commit window's two lists. `base` is what the commit builds on:
     // HEAD, or its parent when amending (so the last commit's changes count as
     // staged), or the empty tree before the first commit.
@@ -146,11 +171,23 @@ public:
     QString headParent() const;
     QString scratchIndexPath() const;
     QByteArray diffFiles(const QString &a, const QString &b) const;
+    GitResult runSequence(const QVector<QStringList> &commands) const;
+    GitResult unstageFiles(const QStringList &paths) const;
+    GitResult replaceIndexContent(const QString &path, const QByteArray &expected,
+                                 const QByteArray &data, bool remove = false) const;
+    QByteArray diffContents(const QByteArray &before, const QByteArray &after) const;
+    CommitOutcome commitSelection(const QString &message, bool amend, const QString &newBranch,
+                                  const QStringList &fromIndex, const QStringList &fromWorktree) const;
+    GitResult pushCurrentBranch() const;
+    QString selectedChanges(const QString &base, const QStringList &staged,
+                            const QStringList &worktree, const QStringList &untracked) const;
+    ResolveSnapshot resolveSnapshot() const;
+    GitResult continueRebase() const;
 
 private:
     QStringList fullDiffArgs() const;
     static QVector<FileEntry> parseNameStatus(const QByteArray &out);
 
-    static inline bool s_ignoreWhitespace = false;
+    static inline std::atomic_bool s_ignoreWhitespace{false};
     QString m_root;
 };

@@ -2,6 +2,7 @@
 
 #include <QPointer>
 #include <QWidget>
+#include <functional>
 
 class CommitWindow;
 class GitRepo;
@@ -42,10 +43,10 @@ public:
     static void chooseRepo(QWidget *from);   // from a page: its window's, as Ctrl+O there
     // The most recently opened repository that is still one, or empty.
     static QString lastRepo();
-    // Ctrl+B, or the branch name: pick a branch and switch to it. True when it
-    // switched (then `switchedTo` has its name); git's reason is shown when it won't.
-    static bool chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo = nullptr);
-    static bool switchBranch(QWidget *from, const GitRepo &repo, const QString &name);
+    // Ctrl+B, or the branch name: load branches and switch asynchronously.
+    // Completion is called only after a successful switch; errors are shown.
+    static void chooseBranch(QWidget *from, const GitRepo &repo, std::function<void(const QString &)> done);
+    static void switchBranch(QWidget *from, const GitRepo &repo, const QString &name, std::function<void()> done);
     // Shows `root` in this window instead, on the same page, once every page
     // has agreed to close (drafts kept, unsaved edits asked about).
     void openRepo(const QString &root);

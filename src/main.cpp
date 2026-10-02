@@ -34,6 +34,8 @@
 
 namespace {
 
+bool noConsole = false;
+
 void printToTerminal(const char *text, bool error = false)
 {
 #ifdef Q_OS_WIN
@@ -60,6 +62,7 @@ void printUsage()
                     "  oc resolve|r [path]    Resolve merge conflicts (path may name a conflicted file)\n"
                     "\n"
                     "Options:\n"
+                    "  --no-console           Run without a console (Windows shortcuts); errors use dialogs\n"
                     "  -w, --wait             Stay in the foreground until the window closes\n"
                     "                         (from a terminal, oc otherwise gives the prompt back)\n"
                     "  -h, --help             Show this help\n"
@@ -68,6 +71,8 @@ void printUsage()
 
 bool hasTerminal()
 {
+    if (noConsole)
+        return false;
 #ifdef Q_OS_WIN
     if (::_isatty(::_fileno(stderr)) || ::_isatty(::_fileno(stdout)))
         return true;
@@ -161,6 +166,27 @@ bool detachFromTerminal(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    // Windows builds are GUI executables. Attach only for CLI-only output;
+    // preserve inherited redirected/Git Bash pipe handles when attaching.
+    bool cliOnly = false;
+    for (int i = 1; i < argc; ++i) {
+        noConsole = noConsole || std::strcmp(argv[i], "--no-console") == 0;
+        cliOnly = cliOnly || std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0
+                  || std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0;
+    }
+    noConsole = noConsole && !cliOnly;
+#ifdef Q_OS_WIN
+    if (cliOnly) {
+        const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        const HANDLE err = ::GetStdHandle(STD_ERROR_HANDLE);
+        if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
+            if (out != nullptr && out != INVALID_HANDLE_VALUE)
+                ::SetStdHandle(STD_OUTPUT_HANDLE, out);
+            if (err != nullptr && err != INVALID_HANDLE_VALUE)
+                ::SetStdHandle(STD_ERROR_HANDLE, err);
+        }
+    }
+#endif
 #if defined(Q_OS_UNIX) || defined(Q_OS_WIN)
     if (detachFromTerminal(argc, argv))
         return 0;
@@ -209,6 +235,7 @@ int main(int argc, char *argv[])
     args.removeFirst();
     args.removeAll(QStringLiteral("-w"));        // --wait: stay in the foreground, handled above
     args.removeAll(QStringLiteral("--wait"));
+    args.removeAll(QStringLiteral("--no-console"));
 
     // A leading subcommand is optional; anything else is taken as a path.
     QString command = QStringLiteral("commit");

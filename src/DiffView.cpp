@@ -14,6 +14,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -867,6 +868,8 @@ DiffView::DiffView(QWidget *parent) : QWidget(parent)
 
 void DiffView::showDiff(const QString &title, const QByteArray &diff, bool editable, const ImageFetch &images)
 {
+    ++m_bufferRequest;
+    m_alignmentPending = false;
     const ImageFetch fetch = images;   // may be m_imageFetch itself, which showMessage clears
     const bool svg = fetch && title.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive);
     if (svg && m_svgAsImage) {
@@ -927,6 +930,8 @@ void DiffView::showDiff(const QString &title, const QByteArray &diff, bool edita
 
 void DiffView::showMessage(const QString &title, const QString &message)
 {
+    ++m_bufferRequest;
+    m_alignmentPending = false;
     m_name = title;
     m_stats->clear();
     m_message->setText(message);
@@ -972,11 +977,11 @@ void DiffView::updateChips()
 {
     QVector<DiffPane::Chip> chips;
     m_chipActs.clear();
-    if (m_editable && onSave) {
+    if (m_editable && onSave && !m_alignmentPending) {
         chips << DiffPane::Chip{QStringLiteral("←"), tr("Put back the other side's version of this line")};
         m_chipActs << ChipAct::Revert;
     }
-    if (!m_lineGlyph.isEmpty()) {
+    if (!m_lineGlyph.isEmpty() && !m_alignmentPending) {
         chips << DiffPane::Chip{m_lineGlyph, tr("%1 this line").arg(m_lineVerb)};
         m_chipActs << ChipAct::LineAction;
     }
@@ -1371,6 +1376,9 @@ void DiffView::onTyped()
 {
     if (m_rendering || !m_editable)
         return;
+    ++m_bufferRequest;
+    m_alignmentPending = true;
+    updateChips();
     if (!m_pending) {
         // First keystroke of a burst: the whole burst is one undo step.
         m_undo << m_buffer;
@@ -1390,6 +1398,8 @@ void DiffView::flushPending()
     const QStringList typed = editorLines();
     if (typed == m_buffer) {
         m_undo.removeLast();   // typed and deleted again: not a step
+        if (rediffAsync)
+            applyBuffer(typed);
         updateHeader();
         return;
     }
@@ -1399,6 +1409,30 @@ void DiffView::flushPending()
 // Re-diffs `buffer` against the left side and redraws, keeping the caret on
 // the same line of the file and the view where it was.
 void DiffView::applyBuffer(const QStringList &buffer)
+{
+    m_buffer = buffer;
+    const int request = ++m_bufferRequest;
+    if (rediffAsync) {
+        m_alignmentPending = true;
+        updateChips();
+        // Put programmatic edits on screen immediately; typing already is.
+        if (editorLines() != buffer)
+            renderBuffer(buffer, {});
+        QPointer<DiffView> self(this);
+        rediffAsync(buffer, [self, request, buffer](const QByteArray &diff) {
+            if (self && request == self->m_bufferRequest && !self->m_pending) {
+                self->renderBuffer(buffer, diff);
+                self->m_alignmentPending = false;
+                self->updateChips();
+            }
+        });
+        updateHeader();
+        return;
+    }
+    renderBuffer(buffer, rediff ? rediff(buffer) : QByteArray());
+}
+
+void DiffView::renderBuffer(const QStringList &buffer, const QByteArray &diff)
 {
     const QTextCursor cur = m_right->textCursor();
     const QTextBlock curBlock = cur.block();
@@ -1412,7 +1446,7 @@ void DiffView::applyBuffer(const QStringList &buffer)
 
     m_buffer = buffer;
     bool binary = false;
-    rowsFromDiff(rediff ? rediff(buffer) : QByteArray(), buffer, &binary);
+    rowsFromDiff(diff, buffer, &binary);
 
     int row = -1, seen = 0;
     for (int i = 0; i < m_r.size() && row < 0; ++i)
@@ -1439,6 +1473,8 @@ void DiffView::take(Take how, int row)
     if (!m_editable)
         return;
     flushPending();
+    if (m_alignmentPending && how != Take::WholeFile)
+        return;
     QStringList next;
     if (how == Take::WholeFile && leftFile) {
         next = linesOf(leftFile());   // exact, whitespace and all
@@ -1497,6 +1533,9 @@ bool DiffView::save()
 
 void DiffView::discard()
 {
+    ++m_bufferRequest;
+    m_alignmentPending = false;
+    updateChips();
     m_rediffTimer->stop();
     m_pending = false;
     m_buffer = m_original;

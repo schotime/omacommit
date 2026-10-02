@@ -42,6 +42,7 @@ private:
     enum class Pick { Current, Incoming, CurrentThenIncoming, IncomingThenCurrent };
 
     void describeSides();
+    void applySides(const ResolveSnapshot &snapshot);
     void refreshList(const QString &select = QString());
     void displayList(const QVector<UnmergedFile> &unmerged, const QHash<QString, int> &counts,
                      const QString &select);
@@ -76,7 +77,6 @@ private:
     void continueRebase();
     void updateOpenFileState();
     static QString bothState(bool hasBase, int left);
-    void selectNextUnresolved();
     void updateActions();
     void fitPicks();   // the pick buttons fold into one dropdown when their row is too narrow
     void applyTheme();
@@ -97,7 +97,7 @@ private:
     QLabel *m_status;
     QPushButton *m_commitBtn;
     QPushButton *m_continueBtn;
-    QProcess *m_continuing = nullptr;
+    bool m_continuing = false;
     QStackedWidget *m_stack = nullptr;
     DiffView *m_top;
     DiffPane *m_merged;

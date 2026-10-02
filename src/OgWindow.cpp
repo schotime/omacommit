@@ -5,6 +5,7 @@
 #include "LogWindow.h"
 #include "ResolveWindow.h"
 #include "GitRepo.h"
+#include "GitTask.h"
 #include "Picker.h"
 #ifdef OG_PORTAL
 #include "Portal.h"
@@ -237,6 +238,10 @@ void OgWindow::resizeEvent(QResizeEvent *e)
 
 void OgWindow::closeEvent(QCloseEvent *e)
 {
+    if (property("gitTaskBusy").toBool()) {
+        e->ignore();
+        return;
+    }
     if (closePages())
         e->accept();
     else
@@ -272,12 +277,12 @@ void OgWindow::chooseRepo()
         dir = QFileDialog::getExistingDirectory(this, title, from);
     if (dir.isEmpty())
         return;
-    const QString root = GitRepo::findRoot(dir);
-    if (root.isEmpty()) {
-        QMessageBox::warning(this, tr("Open Repository"), tr("%1 is not inside a Git repository.").arg(dir));
-        return;
-    }
-    openRepo(root);
+    GitTask::run(this, [dir] { return GitRepo::findRoot(dir); }, [this, dir](const QString &root) {
+        if (root.isEmpty())
+            QMessageBox::warning(this, tr("Open Repository"), tr("%1 is not inside a Git repository.").arg(dir));
+        else
+            openRepo(root);
+    });
 }
 
 QString OgWindow::lastRepo()
@@ -294,33 +299,32 @@ void OgWindow::chooseRepo(QWidget *from)
         w->chooseRepo();
 }
 
-bool OgWindow::chooseBranch(QWidget *from, const GitRepo &repo, QString *switchedTo)
+void OgWindow::chooseBranch(QWidget *from, const GitRepo &repo, std::function<void(const QString &)> done)
 {
-    const QVector<BranchRef> branches = repo.branches();
+    GitTask::run(from, [repo] { return repo.branches(); }, [from, repo, done](const QVector<BranchRef> &branches) {
     QVector<PickerItem> items;
     for (const BranchRef &b : branches)
         items.push_back({b.name, b.current ? tr("current · %1").arg(b.when) : b.when});
     const int picked = Picker::choose(from, tr("Switch to branch"), items);
     if (picked < 0 || branches.at(picked).current)
-        return false;
+        return;
     const QString name = branches.at(picked).localName;
-    if (!switchBranch(from, repo, name))
-        return false;
-    if (switchedTo)
-        *switchedTo = name;
-    return true;
+    switchBranch(from, repo, name, [done, name] { done(name); });
+    });
 }
 
 // Uncommitted changes come along when they can; when git won't switch -- they
 // would be overwritten, or a merge is in progress -- nothing changes and its
 // reason is shown.
-bool OgWindow::switchBranch(QWidget *from, const GitRepo &repo, const QString &name)
+void OgWindow::switchBranch(QWidget *from, const GitRepo &repo, const QString &name, std::function<void()> done)
 {
-    const GitResult r = repo.run({QStringLiteral("switch"), name});
+    GitTask::run(from, [repo, name] { return repo.run({QStringLiteral("switch"), name}); }, [from, name, done](const GitResult &r) {
     if (!r.ok())
         QMessageBox::warning(from, tr("Could not switch to %1").arg(name),
                              QString::fromUtf8(r.err + r.out).trimmed().right(1500));
-    return r.ok();
+    else
+        done();
+    });
 }
 
 void OgWindow::openRepo(const QString &root)

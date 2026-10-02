@@ -1,4 +1,5 @@
 #include "LogWindow.h"
+#include "GitTask.h"
 #include "CommitWindow.h"
 #include "DiffView.h"
 #include "ElidedLabel.h"
@@ -350,8 +351,7 @@ LogWindow::LogWindow(const QString &root, QWidget *parent) : QWidget(parent), m_
     // --- keyboard
     new QShortcut(QKeySequence(QStringLiteral("F5")), this, [this] { reload(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this, [this] {
-        if (OgWindow::chooseBranch(this, m_repo))
-            reload();
+        OgWindow::chooseBranch(this, m_repo, [this](const QString &) { reload(); });
     });
     for (const char *keys : {"Ctrl+L", "Ctrl+Tab"})
         new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Commit); });
@@ -413,16 +413,18 @@ void LogWindow::reload()
     QPointer<LogWindow> self(this);
     QThreadPool::globalInstance()->start([self, repo, request, keep, selectedHashes, allBranches] {
         const QString branch = repo.branch();
+        const QString operation = repo.operation();
         const bool conflicts = !repo.unmerged().isEmpty();
         const auto refs = repo.refsByCommit();
         const QString head = QString::fromUtf8(repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"),
                                                         QStringLiteral("--quiet"), QStringLiteral("HEAD")}).out).trimmed();
         const bool working = !head.isEmpty() && !repo.status().isEmpty();
         const auto batch = repo.log(0, BatchSize, allBranches);
-        QMetaObject::invokeMethod(qApp, [self, request, keep, selectedHashes, allBranches, branch, conflicts, refs, head, working, batch] {
+        QMetaObject::invokeMethod(qApp, [self, request, keep, selectedHashes, allBranches, branch, operation, conflicts, refs, head, working, batch] {
             if (!self || request != self->m_reloadRequest)
                 return;
             LogWindow *w = self;
+            w->m_operation = operation;
             w->m_header->setText(allBranches ? tr("all branches")
                                   : branch.isEmpty() ? tr("of <i>detached HEAD</i>")
                                                      : tr("of %1").arg(Theme::strong(branch)));
@@ -526,10 +528,6 @@ void LogWindow::appendCommits(const QVector<LogCommit> &batch)
 
 // A commit is shown against its first parent, as TortoiseGit does for merges;
 // a root commit against the empty tree.
-QString LogWindow::baseOf(const LogCommit &c) const
-{
-    return c.parents.isEmpty() ? m_repo.emptyTree() : c.parents.constFirst();
-}
 
 void LogWindow::showCommit()
 {
@@ -750,9 +748,9 @@ void LogWindow::showCommitMenu(const QPoint &pos)
     if (!switchTo.isEmpty())
         menu.addSeparator();
     QAction *revert = menu.addAction(tr("Revert changes by this commit…"));
-    revert->setEnabled(m_repo.operation().isEmpty());
+    revert->setEnabled(m_operation.isEmpty());
     if (!revert->isEnabled())
-        revert->setToolTip(tr("Finish the %1 in progress first").arg(m_repo.operation()));
+        revert->setToolTip(tr("Finish the %1 in progress first").arg(m_operation));
     QAction *chosen = menu.exec(m_commits->viewport()->mapToGlobal(pos));
     if (chosen && switchTo.contains(chosen))
         switchBranch(switchTo.value(chosen));
@@ -762,8 +760,7 @@ void LogWindow::showCommitMenu(const QPoint &pos)
 
 void LogWindow::switchBranch(const QString &name)
 {
-    if (OgWindow::switchBranch(this, m_repo, name))
-        reload();
+    OgWindow::switchBranch(this, m_repo, name, [this] { reload(); });
 }
 
 void LogWindow::showFileMenu(const QPoint &pos)
@@ -783,7 +780,7 @@ void LogWindow::showFileMenu(const QPoint &pos)
         revert->setEnabled(f.commitStatus != u'?' && f.commitStatus != u'U');
     } else {
         revert = menu.addAction(tr("Revert changes to this file by this commit…"));
-        revert->setEnabled(m_repo.operation().isEmpty());
+        revert->setEnabled(m_operation.isEmpty());
     }
     // The file as it is now in the working tree, whichever commit shows it.
     menu.addSeparator();
@@ -824,19 +821,26 @@ void LogWindow::revertWorkingFile(const FileEntry &f)
     box.setDefaultButton(QMessageBox::Cancel);
     if (box.exec() != QMessageBox::Ok)
         return;
+    const GitRepo repo = m_repo;
+    ++m_selectionRequest;
+    ++m_diffRequest;
+    GitTask::run(this, [repo, f] {
     GitResult r;
     if (f.commitStatus == u'A') {
-        r = m_repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
+        r = repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
     } else {
         QStringList fromHead{f.oldPath.isEmpty() ? f.path : f.oldPath};
-        r = m_repo.run(QStringList{QStringLiteral("restore"), QStringLiteral("--source=HEAD"), QStringLiteral("--staged"),
+        r = repo.run(QStringList{QStringLiteral("restore"), QStringLiteral("--source=HEAD"), QStringLiteral("--staged"),
                                    QStringLiteral("--worktree"), QStringLiteral("--")} << fromHead);
         if (r.ok() && !f.oldPath.isEmpty())   // a rename: the new name is only un-added
-            r = m_repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
+            r = repo.run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), f.path});
     }
+    return r;
+    }, [this, f](const GitResult &r) {
     if (!r.ok())
         QMessageBox::warning(this, tr("Could not revert %1").arg(f.path), QString::fromUtf8(r.err));
     reload();
+    });
 }
 
 // What the commit did to one file, undone in the working tree (not committed),
@@ -855,12 +859,18 @@ void LogWindow::revertFileChange(const LogCommit &c, const FileEntry &f)
     if (box.exec() != QMessageBox::Ok)
         return;
 
+    const GitRepo repo = m_repo;
+    ++m_selectionRequest;
+    ++m_diffRequest;
+    GitTask::run(this, [repo, c, f] {
+    const QString base = c.parents.isEmpty() ? repo.emptyTree() : c.parents.constFirst();
     QStringList diffArgs{QStringLiteral("diff"), QStringLiteral("--binary"), QStringLiteral("--no-color"),
-                         QStringLiteral("--no-ext-diff"), QStringLiteral("-M"), baseOf(c), c.hash, QStringLiteral("--")};
+                         QStringLiteral("--no-ext-diff"), QStringLiteral("-M"), base, c.hash, QStringLiteral("--")};
     if (!f.oldPath.isEmpty())
         diffArgs << f.oldPath;
-    const GitResult patch = m_repo.run(diffArgs << f.path);
-    const GitResult r = patch.ok() ? m_repo.run({QStringLiteral("apply"), QStringLiteral("-R")}, patch.out) : patch;
+    const GitResult patch = repo.run(diffArgs << f.path);
+    return patch.ok() ? repo.run({QStringLiteral("apply"), QStringLiteral("-R")}, patch.out) : patch;
+    }, [this, c, f](const GitResult &r) {
     if (!r.ok()) {
         QMessageBox::warning(this, tr("Could not revert %1").arg(f.path),
                              tr("Later changes to %1 get in the way of undoing this one.").arg(f.path)
@@ -877,6 +887,7 @@ void LogWindow::revertFileChange(const LogCommit &c, const FileEntry &f)
     reload();
     if (done.clickedButton() == commitNow)
         OgWindow::go(this, OgWindow::Commit);
+    });
 }
 
 // TortoiseGit's "Revert changes by this commit": the commit's changes are
@@ -903,7 +914,14 @@ void LogWindow::revertCommit(const LogCommit &c)
     QStringList args{QStringLiteral("revert"), QStringLiteral("--no-commit")};
     if (merge)
         args << QStringLiteral("-m") << QStringLiteral("1");
-    const GitResult r = m_repo.run(args << c.hash);
+    const GitRepo repo = m_repo;
+    ++m_selectionRequest;
+    ++m_diffRequest;
+    GitTask::run(this, [repo, args, c]() mutable {
+        const GitResult r = repo.run(args << c.hash);
+        return std::make_pair(r, !r.ok() && !repo.unmerged().isEmpty());
+    }, [this, c](const auto &result) {
+    const GitResult &r = result.first;
     const QString output = QString::fromUtf8(r.out + r.err).trimmed();
 
     if (r.ok()) {
@@ -917,7 +935,7 @@ void LogWindow::revertCommit(const LogCommit &c)
         done.exec();
         if (done.clickedButton() == commitNow)
             OgWindow::go(this, OgWindow::Commit);
-    } else if (!m_repo.unmerged().isEmpty()) {
+    } else if (result.second) {
         QMessageBox clash(this);
         clash.setIcon(QMessageBox::Warning);
         clash.setWindowTitle(tr("Revert has conflicts"));
@@ -931,6 +949,8 @@ void LogWindow::revertCommit(const LogCommit &c)
     } else {
         QMessageBox::warning(this, tr("Could not revert %1").arg(c.hash.left(8)), output.right(1500));
     }
+    reload();
+    });
 }
 
 QColor LogWindow::statusColor(QChar status) const

@@ -9,6 +9,7 @@
 #include <QWidget>
 
 #include <memory>
+#include <functional>
 
 class ElidedLabel;
 class MessageEdit;
@@ -35,25 +36,24 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    void refresh();
+    void refresh(std::function<void()> after = {});
+    void applyRefresh(const QVector<FileEntry> &entries);
     QVector<QTreeWidgetItem *> fileItems() const;   // the file rows of both sections, in order
     const FileEntry *entryOf(const QTreeWidgetItem *it) const;   // null for a section header
     void showCurrentDiff();
     bool canEditInDiff(const FileEntry &e) const;
-    QByteArray rediffEdited(const QStringList &lines);
+    void rediffEdited(const QStringList &lines, std::function<void(const QByteArray &)> done);
     bool writeEdited(const QStringList &lines);
     void saveEdited();
     bool resolveUnsavedEdits(bool allowCancel = true);
-    void flagWhitespace(const QByteArray &text);
     void updateWriteButton();
     void setMessage(const QString &text);
     void writeMessage();
-    QString messagePrompt() const;
+    void startWriter(const QString &prompt);
     void showFileMenu(const QPoint &pos);
     bool canUnstage(const FileEntry &e) const;
     void stageFile(const FileEntry &e);
     void unstageFile(const FileEntry &e);
-    bool indexMovedOn(const QByteArray &index);
     void stageLines(const DiffView::Selection &picked);
     void unstageLines(const DiffView::Selection &picked);
     bool canRevert(const FileEntry &e) const;
@@ -62,13 +62,13 @@ private:
     bool canStash(const FileEntry &e) const;
     void stashFiles(const QVector<FileEntry> &files);
     QString commitIgnoreFile() const;
-    void loadCommitIgnore();
     bool isCommitIgnored(const FileEntry &e) const;
     void setCommitIgnored(const QStringList &paths, bool on);
     void afterIndexChange(const GitResult &r, const QString &failure, const QString &done);
+    void runIndexTask(std::function<GitResult(const GitRepo &)> work, const QString &failure,
+                      const QString &done, bool discardEdits = false);
     void onAmendToggled(bool on);
     void updateBranchField();
-    bool prepareBranch();
     void updateCounts();
     void updateSelectAllState();
     void toggleAll();
@@ -89,6 +89,11 @@ private:
 
     GitRepo m_repo;
     QVector<FileEntry> m_entries;
+    QString m_commitBase;          // resolved by the latest background refresh
+    QString m_gitDirectory;
+    int m_refreshRequest = 0;
+    bool m_refreshing = false;
+    QString m_refreshStatus;
 
     QSplitter *m_split = nullptr;
     bool m_sized = false;
@@ -122,6 +127,8 @@ private:
     QString m_diffPath;
     bool m_diffStaged = false;      // it is the file's staged side that is shown
     QByteArray m_shownIndex;        // the index's copy of it when it was shown
+    bool m_shownInIndex = false;
+    int m_editRequest = 0;
     QByteArray m_diffLoaded;
     QByteArray m_diffBase;
     bool m_diffCr = false;   // git's own diff saw CRLF on the file's side

@@ -69,11 +69,38 @@ binary so Git hooks, signing and credential helpers work. The Omarchy theme
 and agent are optional on Windows; without them oc uses fallback colours and
 disables **Write**.
 
+Windows `oc.exe` is a native GUI application: shortcuts never open a console,
+and launching it from a terminal yields naturally. Use this shortcut **Target**
+(optionally append a repository path):
+
+```text
+"%USERPROFILE%\.local\bin\oc.exe"
+```
+
+`oc --help` and `oc --version` still write to the calling terminal or redirected
+output. `--no-console` remains accepted for existing shortcuts and forces
+startup errors to use dialogs. No separate launcher is required.
+
+Keep the tiny `oc.com` terminal entry point beside `oc.exe`. Windows shells
+resolve `oc` to `oc.com`, which waits for help/version output before returning
+the prompt and yields for ordinary GUI launches. Shortcuts should explicitly
+target `oc.exe` so they never create a console.
+
 Static linking Qt under LGPL has additional license obligations when
 redistributing the executable (including providing a way to relink it with a
 modified Qt); check your Qt licensing terms before distribution.
 
 ## Use
+
+Repository refreshes, diff loading/edit re-diffing, staging, committing,
+pushing, branch operations and conflict-resolution Git work run in the
+background. Mutating operations temporarily disable the window's actions
+(including page/repository switching) to prevent overlapping writes; the
+window continues painting. Outdated read results are discarded.
+
+Regression tests can be built with `-DOG_BUILD_TESTS=ON`, then run with
+`ctest --test-dir build --output-on-failure`. Tests use temporary repositories
+and exercise commit selection, stale-index protection and background UI work.
 
 ```sh
 oc                  # commit dialog for the repo containing the current directory

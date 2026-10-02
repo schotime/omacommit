@@ -4,6 +4,9 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace {
 bool isBatchFile(const QString &path)
@@ -27,6 +30,11 @@ QStringList batchArguments(const QString &path, const QStringList &args)
 QString run(const QString &program, const QStringList &args, int *exitCode = nullptr)
 {
     QProcess p;
+#ifdef Q_OS_WIN
+    p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+#endif
     p.start(isBatchFile(program) ? QStringLiteral("cmd.exe") : program,
             isBatchFile(program) ? batchArguments(program, args) : args);
     if (!p.waitForFinished(5000)) {

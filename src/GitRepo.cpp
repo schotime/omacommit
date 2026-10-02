@@ -10,6 +10,9 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QTemporaryDir>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace {
 QProcessEnvironment gitEnv()
@@ -44,6 +47,11 @@ QString GitRepo::findRoot(const QString &startDir)
     QProcess p;
     p.setWorkingDirectory(startDir);
     p.setProcessEnvironment(gitEnv());
+#ifdef Q_OS_WIN
+    p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+#endif
     p.start(QStringLiteral("git"), {QStringLiteral("rev-parse"), QStringLiteral("--show-toplevel")});
     if (!p.waitForFinished(5000) || p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0)
         return {};
@@ -54,6 +62,13 @@ GitRepo::GitRepo(const QString &root) : m_root(root) {}
 
 void GitRepo::configure(QProcess &proc, const QString &indexFile) const
 {
+#ifdef Q_OS_WIN
+    // Git reads/writes pipes; it needs no console, even when oc has detached
+    // from its own console for a desktop shortcut.
+    proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+#endif
     proc.setWorkingDirectory(m_root);
     QProcessEnvironment env = gitEnv();
     if (!indexFile.isEmpty())
@@ -62,11 +77,16 @@ void GitRepo::configure(QProcess &proc, const QString &indexFile) const
 }
 
 GitResult GitRepo::run(const QStringList &args, const QByteArray &stdinData, int timeoutMs,
-                       const QString &indexFile) const
+                        const QString &indexFile, bool noEditor) const
 {
     GitResult r;
     QProcess p;
     configure(p, indexFile);
+    if (noEditor) {
+        auto env = p.processEnvironment();
+        env.insert(QStringLiteral("GIT_EDITOR"), QStringLiteral("true"));
+        p.setProcessEnvironment(env);
+    }
     p.start(QStringLiteral("git"), args);
     if (!p.waitForStarted(5000)) {
         r.err = "could not start git";
@@ -217,6 +237,51 @@ QString GitRepo::headParent() const
                         QStringLiteral("HEAD^1")});
     const QString p = QString::fromUtf8(r.out).trimmed();
     return p.isEmpty() ? emptyTree() : p;   // amending the root commit
+}
+
+CommitSnapshot GitRepo::commitSnapshot(bool amend, bool includePreparedMessage) const
+{
+    CommitSnapshot d;
+    d.base = commitBase(amend);
+    d.entries = stagedFiles(d.base);
+    if (amend) {
+        d.lastMessage = lastCommitMessage();
+        for (const FileEntry &e : stagedFiles(QStringLiteral("HEAD")))
+            d.indexChanged.insert(e.path);
+        // The last commit's files come first, in the commit's order.
+        QHash<QString, int> order;
+        const auto last = changedFiles(d.base, QStringLiteral("HEAD"));
+        for (int i = 0; i < last.size(); ++i)
+            order.insert(last.at(i).path, i);
+        std::stable_sort(d.entries.begin(), d.entries.end(), [&](const FileEntry &a, const FileEntry &b) {
+            return order.value(a.path, INT_MAX) < order.value(b.path, INT_MAX);
+        });
+    }
+    d.entries += unstagedFiles();
+    d.branch = branch();
+    d.merging = isMerging();
+    const QString dir = gitDir();
+    d.gitDirectory = dir;
+    if (!dir.isEmpty()) {
+        QFile ignore(dir + QStringLiteral("/omacommit-ignore"));
+        if (ignore.open(QIODevice::ReadOnly)) {
+            for (const QString &raw : QString::fromUtf8(ignore.readAll()).split(u'\n')) {
+                const QString line = raw.trimmed();
+                if (!line.isEmpty() && !line.startsWith(u'#'))
+                    d.ignorePatterns << line;
+            }
+        }
+        // Git's prepared merge/cherry-pick/revert message, without instructions.
+        QFile prepared(dir + QStringLiteral("/MERGE_MSG"));
+        if (includePreparedMessage && prepared.open(QIODevice::ReadOnly)) {
+            QStringList keep;
+            for (const QString &line : QString::fromUtf8(prepared.readAll()).split(u'\n'))
+                if (!line.startsWith(u'#'))
+                    keep << line;
+            d.preparedMessage = keep.join(u'\n').trimmed();
+        }
+    }
+    return d;
 }
 
 
@@ -546,6 +611,49 @@ QString GitRepo::operation() const
     return {};
 }
 
+ResolveSnapshot GitRepo::resolveSnapshot() const
+{
+    ResolveSnapshot d;
+    d.operation = operation();
+    d.branch = branch();
+    d.conflicts = !unmerged().isEmpty();
+    auto out = [this](const QStringList &args) { return QString::fromUtf8(run(args).out).trimmed(); };
+    auto nameOf = [&](const QString &rev) {
+        QString name = out({QStringLiteral("name-rev"), QStringLiteral("--name-only"), rev});
+        if (name.isEmpty() || name == u"undefined")
+            name = out({QStringLiteral("rev-parse"), QStringLiteral("--short"), rev});
+        return name.remove(QStringLiteral("remotes/"));
+    };
+    auto describe = [&](const QString &rev) {
+        return out({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-1"),
+                    QStringLiteral("--format=%h %s"), rev});
+    };
+    if (d.operation == u"merge")
+        d.other = nameOf(QStringLiteral("MERGE_HEAD"));
+    else if (d.operation == u"rebase") {
+        const QString dir = gitDir();
+        for (const char *path : {"/rebase-merge/onto", "/rebase-apply/onto"}) {
+            QFile f(dir + QLatin1String(path));
+            if (f.open(QIODevice::ReadOnly)) {
+                const QString sha = QString::fromLatin1(f.readAll()).trimmed();
+                d.onto = nameOf(sha);
+                d.replayed = out({QStringLiteral("rev-list"), QStringLiteral("--count"), sha + QStringLiteral("..HEAD")}).toInt();
+                break;
+            }
+        }
+        d.replaying = describe(QStringLiteral("REBASE_HEAD"));
+    } else if (d.operation == u"cherry-pick")
+        d.picked = describe(QStringLiteral("CHERRY_PICK_HEAD"));
+    else if (d.operation == u"revert")
+        d.reverted = describe(QStringLiteral("REVERT_HEAD"));
+    return d;
+}
+
+GitResult GitRepo::continueRebase() const
+{
+    return run({QStringLiteral("rebase"), QStringLiteral("--continue")}, {}, 1800000, {}, true);
+}
+
 QVector<UnmergedFile> GitRepo::unmerged() const
 {
     QVector<UnmergedFile> out;
@@ -585,6 +693,150 @@ QByteArray GitRepo::diffFiles(const QString &a, const QString &b) const
         args << QStringLiteral("-w");
     args << QStringLiteral("--") << a << b;
     return run(args).out;
+}
+
+GitResult GitRepo::runSequence(const QVector<QStringList> &commands) const
+{
+    GitResult result;
+    result.exitCode = 0;
+    for (const auto &command : commands) {
+        result = run(command);
+        if (!result.ok())
+            break;
+    }
+    return result;
+}
+
+GitResult GitRepo::unstageFiles(const QStringList &paths) const
+{
+    QStringList args = hasHead()
+        ? QStringList{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")}
+        : QStringList{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--")};
+    return run(args << paths);
+}
+
+GitResult GitRepo::replaceIndexContent(const QString &path, const QByteArray &expected,
+                                      const QByteArray &data, bool remove) const
+{
+    if (indexBlob(path) != expected) {
+        GitResult result;
+        result.err = "The file changed in the index meanwhile. Refresh and try again.";
+        return result;
+    }
+    return remove ? run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"),
+                         QStringLiteral("--"), path}) : setIndexContent(path, data);
+}
+
+QByteArray GitRepo::diffContents(const QByteArray &before, const QByteArray &after) const
+{
+    QTemporaryDir tmp;
+    const QString left = tmp.filePath(QStringLiteral("before"));
+    const QString right = tmp.filePath(QStringLiteral("after"));
+    QFile a(left), b(right);
+    if (!a.open(QIODevice::WriteOnly) || !b.open(QIODevice::WriteOnly)
+        || a.write(before) != before.size() || b.write(after) != after.size())
+        return {};
+    a.close();
+    b.close();
+    return diffFiles(left, right);
+}
+
+CommitOutcome GitRepo::commitSelection(const QString &message, bool amend, const QString &newBranch,
+                                       const QStringList &fromIndex, const QStringList &fromWorktree) const
+{
+    CommitOutcome out;
+    if (!newBranch.isEmpty()) {
+        if (!isValidBranchName(newBranch)) {
+            out.result.err = "Invalid Git branch name.";
+            return out;
+        }
+        if (branchExists(newBranch)) {
+            out.result.err = "The branch already exists. Choose another name or clear the branch field.";
+            return out;
+        }
+        out.result = createBranch(newBranch);
+        if (!out.result.ok())
+            return out;
+    }
+    const bool merging = isMerging();
+    QString indexFile;
+    if (merging) {
+        if (!fromWorktree.isEmpty()) {
+            out.result = run(QStringList{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")} << fromWorktree);
+            if (!out.result.ok())
+                return out;
+        }
+    } else {
+        indexFile = scratchIndexPath();
+        if (indexFile.isEmpty()) {
+            out.result.err = "Could not locate the repository's Git directory.";
+            return out;
+        }
+        QFile::remove(indexFile);
+        out.result = prepareCommitIndex(indexFile, commitBase(amend), fromIndex, fromWorktree);
+        if (!out.result.ok()) {
+            QFile::remove(indexFile);
+            return out;
+        }
+    }
+    QStringList args{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
+    if (amend)
+        args << QStringLiteral("--amend");
+    out.result = run(args, message.toUtf8(), 1800000, indexFile);
+    if (!indexFile.isEmpty())
+        QFile::remove(indexFile);
+    if (!out.result.ok())
+        return out;
+    if (!merging && !fromWorktree.isEmpty()) {
+        const auto reset = run(QStringList{QStringLiteral("reset"), QStringLiteral("-q"), QStringLiteral("--")} << fromWorktree);
+        if (!reset.ok())
+            out.result.err += "\nCommitted, but could not update the real index:\n" + reset.err;
+    }
+    out.hash = QString::fromUtf8(run({QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("HEAD")}).out).trimmed();
+    return out;
+}
+
+GitResult GitRepo::pushCurrentBranch() const
+{
+    QStringList args{QStringLiteral("push")};
+    if (upstream().isEmpty()) {
+        const QString name = branch();
+        const QStringList destinations = remotes();
+        if (!name.isEmpty() && !destinations.isEmpty()) {
+            const QString remote = destinations.contains(QStringLiteral("origin")) ? QStringLiteral("origin") : destinations.first();
+            args << QStringLiteral("-u") << remote << name;
+        }
+    }
+    return run(args, {}, 1800000);
+}
+
+QString GitRepo::selectedChanges(const QString &base, const QStringList &staged,
+                                 const QStringList &worktree, const QStringList &untracked) const
+{
+    QString diff;
+    auto baseDiff = [&](bool cached, const QStringList &paths) {
+        QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("-M")};
+        if (cached)
+            args << QStringLiteral("--cached");
+        return QString::fromUtf8(run(args << base << QStringLiteral("--") << paths).out);
+    };
+    if (!staged.isEmpty())
+        diff += baseDiff(true, staged);
+    if (!worktree.isEmpty())
+        diff += baseDiff(false, worktree);
+    // A real empty file works on Windows as well as Linux.
+    QTemporaryDir tmp;
+    const QString empty = tmp.filePath(QStringLiteral("empty"));
+    QFile file(empty);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.close();
+        for (const QString &path : untracked)
+            diff += QString::fromUtf8(run({QStringLiteral("diff"), QStringLiteral("--no-color"),
+                                           QStringLiteral("--no-ext-diff"), QStringLiteral("--no-index"),
+                                           QStringLiteral("--"), empty, path}).out);
+    }
+    return diff;
 }
 
 WhitespaceRules GitRepo::whitespaceRules(const QString &path) const

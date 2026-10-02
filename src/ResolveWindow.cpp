@@ -1,4 +1,5 @@
 #include "ResolveWindow.h"
+#include "GitTask.h"
 #include "ImageCompare.h"
 #include "CommitWindow.h"
 #include "DiffView.h"
@@ -111,8 +112,6 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
     : QWidget(parent), m_repo(root)
 {
     setWindowTitle(tr("Resolve — %1").arg(QFileInfo(root).fileName()));
-    m_operation = m_repo.operation();
-    describeSides();
 
     // --- left: what is going on, and the files
     auto *tabs = new PageTabs(OgWindow::Resolve, this);
@@ -413,6 +412,7 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
         new QShortcut(QKeySequence(QString::fromLatin1(keys)), this, [this] { OgWindow::go(this, OgWindow::Log); });
 
     applyTheme();
+    describeSides();
     QString select = selectPath;
     if (!select.isEmpty() && QFileInfo(select).isAbsolute())
         select = QDir(root).relativeFilePath(select);
@@ -424,39 +424,44 @@ ResolveWindow::ResolveWindow(const QString &root, const QString &selectPath, QWi
 // commit. The UI only ever uses these names, never ours/theirs.
 void ResolveWindow::describeSides()
 {
-    auto out = [this](const QStringList &args) { return QString::fromUtf8(m_repo.run(args).out).trimmed(); };
-    auto nameOf = [&](const QString &rev) {
-        QString n = out({QStringLiteral("name-rev"), QStringLiteral("--name-only"), rev});
-        if (n.isEmpty() || n == u"undefined")
-            n = out({QStringLiteral("rev-parse"), QStringLiteral("--short"), rev});
-        return n.remove(QStringLiteral("remotes/"));
-    };
-    auto describe = [&](const QString &rev) { return out({QStringLiteral("log"), QStringLiteral("--no-show-signature"), QStringLiteral("-1"), QStringLiteral("--format=%h %s"), rev}); };
-    const QString branch = m_repo.branch();
+    const GitRepo repo = m_repo;
+    GitTask::run(this, [repo] { return repo.resolveSnapshot(); }, [this](const ResolveSnapshot &d) {
+        applySides(d);
+        m_subtitle->setText(m_opText);
+        m_subtitle->setVisible(!m_opText.isEmpty());
+        m_hintLabel->setText(m_hint);
+        m_hintLabel->setVisible(!m_hint.isEmpty());
+        m_commitBtn->setVisible(m_canCommit);
+        m_continueBtn->setVisible(m_operation == u"rebase");
+        updateActions();
+        if (!m_path.isEmpty())
+            showSides();
+    });
+}
+
+void ResolveWindow::applySides(const ResolveSnapshot &d)
+{
+    m_operation = d.operation;
+    m_canCommit = false;
+    m_mineIsIncoming = false;
+    m_hint.clear();
+    m_opText.clear();
+    const QString branch = d.branch;
     const QString head = branch.isEmpty() ? tr("HEAD") : tr("HEAD (%1)").arg(branch);
 
     m_curShort = tr("mine");
     m_curLong = tr("Mine — %1").arg(head);
     if (m_operation == u"merge") {
-        const QString other = nameOf(QStringLiteral("MERGE_HEAD"));
+        const QString other = d.other;
         m_incShort = tr("theirs");
         m_incLong = tr("Theirs — %1").arg(other);
         m_canCommit = true;
         m_opText = tr("Merging %1 into %2").arg(Theme::strong(other), Theme::strong(branch.isEmpty() ? tr("HEAD") : branch));
     } else if (m_operation == u"rebase") {
-        QString onto, ontoSha;
-        for (const char *dir : {"/rebase-merge/onto", "/rebase-apply/onto"}) {
-            QFile f(m_repo.gitDir() + QLatin1String(dir));
-            if (f.open(QIODevice::ReadOnly)) {
-                ontoSha = QString::fromLatin1(f.readAll()).trimmed();
-                onto = nameOf(ontoSha);
-                break;
-            }
-        }
-        const QString replaying = describe(QStringLiteral("REBASE_HEAD"));
+        const QString onto = d.onto;
+        const QString replaying = d.replaying;
         // HEAD is upstream plus whichever of your commits have been replayed already.
-        const int replayed = ontoSha.isEmpty() ? 0
-                           : out({QStringLiteral("rev-list"), QStringLiteral("--count"), ontoSha + QStringLiteral("..HEAD")}).toInt();
+        const int replayed = d.replayed;
         const QString base = onto.isEmpty() ? tr("HEAD") : onto;
         m_mineIsIncoming = true;
         m_curShort = tr("upstream");
@@ -468,13 +473,13 @@ void ResolveWindow::describeSides()
         m_hint = tr("Resolve every file, then continue the rebase to the next commit.");
         m_opText = tr("Rebasing onto %1").arg(Theme::strong(onto.isEmpty() ? tr("HEAD") : onto));
     } else if (m_operation == u"cherry-pick") {
-        const QString picked = describe(QStringLiteral("CHERRY_PICK_HEAD"));
+        const QString picked = d.picked;
         m_incShort = tr("picked");
         m_incLong = tr("Picked — %1").arg(picked);
         m_canCommit = true;
         m_opText = tr("Cherry-picking %1").arg(Theme::strong(picked));
     } else if (m_operation == u"revert") {
-        const QString reverted = describe(QStringLiteral("REVERT_HEAD"));
+        const QString reverted = d.reverted;
         m_incShort = tr("reverted");
         m_incLong = tr("Revert of %1").arg(reverted);
         m_canCommit = true;
@@ -558,7 +563,7 @@ void ResolveWindow::displayList(const QVector<UnmergedFile> &unmerged, const QHa
                 it->setForeground(1, t.red);
             }
             m_files->addTopLevelItem(it);
-            if (p == select)
+            if (p == select && !m_resolved.contains(p))
                 toSelect = it;
         }
     }
@@ -606,16 +611,6 @@ void ResolveWindow::updateOpenFileState()
     }
 }
 
-void ResolveWindow::selectNextUnresolved()
-{
-    for (int i = 0; i < m_files->topLevelItemCount(); ++i) {
-        auto *it = m_files->topLevelItem(i);
-        if (!m_resolved.contains(it->data(0, PathRole).toString())) {
-            m_files->setCurrentItem(it);
-            return;
-        }
-    }
-}
 
 // Asks what to do with unsaved edits to the merged file. False: don't go ahead.
 bool ResolveWindow::resolveUnsaved(bool allowCancel)
@@ -1089,9 +1084,17 @@ void ResolveWindow::markResolved()
 // Runs the git commands that settle the open file, then moves on.
 void ResolveWindow::finishWith(const QStringList &gitArgs, const QStringList &thenArgs)
 {
-    GitResult r = m_repo.run(gitArgs);
-    if (r.ok() && !thenArgs.isEmpty())
-        r = m_repo.run(thenArgs);
+    const GitRepo repo = m_repo;
+    const QString path = m_path;
+    ++m_openRequest;
+    ++m_listRequest;
+    m_status->setText(tr("Resolving %1…").arg(path));
+    GitTask::run(this, [repo, gitArgs, thenArgs] {
+        QVector<QStringList> commands{gitArgs};
+        if (!thenArgs.isEmpty())
+            commands << thenArgs;
+        return repo.runSequence(commands);
+    }, [this, path](const GitResult &r) {
     if (!r.ok()) {
         QMessageBox::warning(this, tr("Could not resolve %1").arg(m_path), QString::fromUtf8(r.err));
         refreshList(m_path);
@@ -1100,9 +1103,8 @@ void ResolveWindow::finishWith(const QStringList &gitArgs, const QStringList &th
     m_merged->document()->setModified(false);
     m_resolved.insert(m_path);
     m_status->setText(tr("Resolved %1").arg(m_path));
-    const QString done = m_path;
-    refreshList(done);
-    selectNextUnresolved();
+    refreshList(path);
+    });
 }
 
 void ResolveWindow::commit()
@@ -1120,16 +1122,20 @@ void ResolveWindow::continueRebase()
 {
     if (m_continuing || !resolveUnsaved())
         return;
-    m_continuing = new QProcess(this);
-    m_repo.configure(*m_continuing);
-    QProcessEnvironment env = m_continuing->processEnvironment();
-    env.insert(QStringLiteral("GIT_EDITOR"), QStringLiteral("true"));   // keep the commit's own message
-    m_continuing->setProcessEnvironment(env);
-    connect(m_continuing, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
-        const QString output = QString::fromUtf8(m_continuing->readAllStandardOutput() + m_continuing->readAllStandardError());
-        m_continuing->deleteLater();
-        m_continuing = nullptr;
-        m_operation = m_repo.operation();
+    m_continuing = true;
+    const GitRepo repo = m_repo;
+    ++m_openRequest;
+    ++m_listRequest;
+    m_status->setText(tr("Continuing the rebase…"));
+    m_continueBtn->setEnabled(false);
+    GitTask::run(this, [repo] {
+        const auto r = repo.continueRebase();
+        return std::make_pair(r, repo.resolveSnapshot());
+    }, [this](const auto &result) {
+        m_continuing = false;
+        const QString output = QString::fromUtf8(result.first.out + result.first.err);
+        const ResolveSnapshot &d = result.second;
+        applySides(d);
         if (m_operation != u"rebase") {
             m_opText = tr("The rebase is finished.");
             m_subtitle->setText(m_opText);
@@ -1140,9 +1146,8 @@ void ResolveWindow::continueRebase()
             m_stack->setCurrentIndex(2);
             return;
         }
-        if (!m_repo.unmerged().isEmpty()) {
+        if (d.conflicts) {
             // The next commit's conflicts: a fresh list, and sides named for it.
-            describeSides();
             m_subtitle->setText(m_opText);
             m_listed.clear();
             m_resolved.clear();
@@ -1155,12 +1160,8 @@ void ResolveWindow::continueRebase()
         refreshList();
         QMessageBox::information(this, tr("The rebase stopped"),
                                  tr("git stopped for something other than a conflict; carry on in a terminal.\n\n")
-                                     + output.right(1500));
+                                      + output.right(1500));
     });
-    m_status->setText(tr("Continuing the rebase…"));
-    m_continueBtn->setEnabled(false);
-    m_continuing->start(QStringLiteral("git"), {QStringLiteral("rebase"), QStringLiteral("--continue")});
-    m_continuing->closeWriteChannel();
 }
 
 void ResolveWindow::updateActions()

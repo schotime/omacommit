@@ -140,6 +140,7 @@ public:
     // left -- live in a buffer here until saved; nothing touches the file
     // before onSave.
     std::function<QByteArray(const QStringList &)> rediff;   // right lines -> unified diff against left
+    std::function<void(const QStringList &, std::function<void(const QByteArray &)>)> rediffAsync;
     std::function<bool(const QStringList &)> onSave;          // write them; false if not written
     std::function<void()> onSaveRequested;                    // the Save button
     std::function<void()> onOptionsChanged;                   // whitespace settings: show the diff again
@@ -213,6 +214,7 @@ public:
     QStringList linesApplied(const Selection &picked, bool toLeft, const QStringList &exactTarget) const;
     QStringList resultOf(Take how, int row) const;
     QStringList rightLines() const;   // the right side as shown (the buffer, once flushed)
+    QStringList editedLines() const { return m_pending ? editorLines() : m_buffer; }
 
     // Text <-> lines the way the panes see it: no \r, no trailing empty line.
     static QStringList linesOf(const QByteArray &data);
@@ -243,6 +245,9 @@ private:
     QScrollBar *activeScrollBar() const;
     bool rowsFromDiff(const QByteArray &diff, const QStringList &fallback, bool *binary);
     void applyBuffer(const QStringList &buffer);
+    void renderBuffer(const QStringList &buffer, const QByteArray &diff);
+    int m_bufferRequest = 0;
+    bool m_alignmentPending = false;
     QStringList editorLines() const;
     void onTyped();
     void flushPending();

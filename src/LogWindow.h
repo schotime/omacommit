@@ -52,10 +52,10 @@ private:
     void sizeColumns();
     void fitColumns();
     bool eventFilter(QObject *watched, QEvent *event) override;
-    QString baseOf(const LogCommit &c) const;
     QColor statusColor(QChar status) const;
 
     GitRepo m_repo;
+    QString m_operation;
     QLabel *m_header;
     ElidedLabel *m_repoPath;
     QCheckBox *m_allBranches;

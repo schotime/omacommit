@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(oc VERSION 0.1.0 LANGUAGES CXX)
+project(oc VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -70,17 +70,38 @@ add_executable(oc
     src/Picker.cpp
 )
 if(WIN32)
-    # A GUI-subsystem executable loses stdout/stderr when launched from an
-    # interactive Git Bash terminal. Keep the console subsystem so --help,
-    # --version and startup errors reach the invoking shell without a wrapper.
-    set_target_properties(oc PROPERTIES WIN32_EXECUTABLE FALSE)
+    # Native GUI subsystem: Explorer/shortcuts never create a console and
+    # terminal launches yield naturally. main preserves CLI output explicitly.
+    set_target_properties(oc PROPERTIES WIN32_EXECUTABLE TRUE)
     enable_language(RC)
     target_sources(oc PRIVATE icons/oc.rc)
+    # Shells resolve .com before .exe: CLI output finishes before their next
+    # prompt, while explicit oc.exe shortcuts remain entirely console-free.
+    add_executable(oc-cli src/WindowsCli.cpp)
+    set_target_properties(oc-cli PROPERTIES AUTOMOC OFF OUTPUT_NAME oc SUFFIX ".com")
+    target_link_libraries(oc-cli PRIVATE shell32)
+    if(MINGW)
+        target_link_options(oc-cli PRIVATE -static -static-libgcc -static-libstdc++)
+        if(OG_STANDALONE)
+            target_link_options(oc-cli PRIVATE -Wl,--start-group)
+        endif()
+    endif()
+    install(TARGETS oc-cli RUNTIME DESTINATION bin)
 endif()
 # The SVG is a Qt resource for the window; Windows Explorer reads the separate
 # ICO from the native executable resource rather than the Qt resource.
 qt_add_resources(oc icons PREFIX "/" FILES icons/omarchy-commit.svg)
 target_link_libraries(oc PRIVATE Qt6::Widgets)
+option(OG_BUILD_TESTS "Build repository/background task regression tests" OFF)
+if(OG_BUILD_TESTS)
+    enable_testing()
+    add_executable(oc-git-tests tests/GitTests.cpp src/GitRepo.cpp src/DiffView.cpp
+                   src/ImageCompare.cpp src/Syntax.cpp src/Theme.cpp)
+    target_include_directories(oc-git-tests PRIVATE src)
+    target_link_libraries(oc-git-tests PRIVATE Qt6::Widgets)
+    add_test(NAME git-background COMMAND oc-git-tests)
+    set_tests_properties(git-background PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
 # Syntax highlighting is optional on Linux, but required for the Windows
 # standalone build so a missing static library cannot silently ship plain text.
 find_package(KF6SyntaxHighlighting QUIET)
