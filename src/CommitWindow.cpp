@@ -668,7 +668,7 @@ void CommitWindow::showCurrentDiff()
                 return;
             }
             // Lines are written back as UTF-8, which would mangle anything else.
-            const bool editable = mayEdit && d.onDiskOk && isUtf8(d.onDisk) && !d.onDisk.startsWith("\xEF\xBB\xBF");
+            const bool editable = mayEdit && d.onDiskOk && isUtf8(d.onDisk);
             w->m_diffLoaded = editable ? d.onDisk : QByteArray();
             w->m_diffBase = d.index;   // what the left side is, and what edits are re-diffed against
             w->m_diffCr = d.diffCr;

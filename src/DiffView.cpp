@@ -22,6 +22,7 @@
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStringDecoder>
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QTimer>
@@ -1652,7 +1653,11 @@ QStringList DiffView::rightLines() const
 
 QStringList DiffView::linesOf(const QByteArray &data)
 {
-    const QString s = QString::fromUtf8(data);
+    // A UTF-8 BOM stays, as U+FEFF on the first line, as it does in git's diff
+    // of the file: so the lines match what the panes show, and compose writes
+    // it back.
+    QStringDecoder utf8(QStringDecoder::Utf8, QStringDecoder::Flag::ConvertInitialBom);
+    const QString s = utf8(data);
     if (s.isEmpty())
         return {};
     QStringList lines = s.split(u'\n');
